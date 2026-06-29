@@ -12,3 +12,4 @@ C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\refint\MailDet
 C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\MailDetectorAgent.pdb
 C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\maildetectoragent.genruntimeconfig.cache
 C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\ref\MailDetectorAgent.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\maildetectoragent.sourcelink.json
