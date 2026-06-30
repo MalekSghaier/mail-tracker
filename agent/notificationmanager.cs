@@ -16,14 +16,30 @@ namespace MailDetectorAgent
     public static class NotificationManager
     {
         private static readonly Dictionary<string, AlertDto> _pending = new();
+        private static readonly Dictionary<string, bool?> _reminderStatus = new(); // cache local, source = backend
         private static NotificationForm? _singleForm;
         private static BadgeForm? _badgeForm;
         private static NotificationCenterForm? _centerForm;
         private static Func<string, Task>? _ackCallback;
+        private static Func<string, bool, Task>? _reminderCallback;
 
-        public static void Configure(Func<string, Task> ackCallback)
+        public static void Configure(Func<string, Task> ackCallback, Func<string, bool, Task> reminderCallback)
         {
             _ackCallback = ackCallback;
+            _reminderCallback = reminderCallback;
+        }
+
+        public static bool? GetReminderStatus(string trackingId) =>
+            _reminderStatus.TryGetValue(trackingId, out var v) ? v : null;
+
+        public static void SetReminderStatus(string trackingId, bool done)
+        {
+            _reminderStatus[trackingId] = done;
+            _ = _reminderCallback?.Invoke(trackingId, done); // persisté en base côté backend
+            // La suppression effective (ack + retrait de l'UI) est désormais
+            // déclenchée par le composant UI lui-même (popup ou carte), après
+            // un court message de confirmation, via le même Dismiss() que
+            // pour la croix — pour les deux réponses Oui et Non.
         }
 
         public static async Task AddAlertsAsync(IEnumerable<AlertDto> alerts)
@@ -33,6 +49,9 @@ namespace MailDetectorAgent
                 if (!_pending.ContainsKey(a.tracking_id))
                 {
                     _pending[a.tracking_id] = a;
+                    // Le backend peut déjà connaître une réponse précédente
+                    // (ex. après redémarrage de l'agent) -> on la récupère.
+                    _reminderStatus[a.tracking_id] = a.reminder_done;
                     Refresh();
                     // Petite pause pour que chaque transition (popup -> badge=2 ->
                     // badge=3...) soit visible séparément, même si toutes les
@@ -48,6 +67,7 @@ namespace MailDetectorAgent
             {
                 _ = _ackCallback?.Invoke(trackingId);
             }
+            _reminderStatus.Remove(trackingId);
             Refresh();
         }
 
@@ -70,7 +90,11 @@ namespace MailDetectorAgent
                 if (_singleForm == null || _singleForm.IsDisposed)
                 {
                     var alert = _pending.Values.First();
-                    _singleForm = new NotificationForm(alert, () => Dismiss(alert.tracking_id));
+                    _singleForm = new NotificationForm(
+                        alert,
+                        () => Dismiss(alert.tracking_id),
+                        GetReminderStatus(alert.tracking_id),
+                        done => SetReminderStatus(alert.tracking_id, done));
                     _singleForm.Show();
                 }
                 return;
@@ -96,7 +120,11 @@ namespace MailDetectorAgent
         {
             if (_centerForm == null || _centerForm.IsDisposed)
             {
-                _centerForm = new NotificationCenterForm(_pending.Values.ToList(), Dismiss);
+                _centerForm = new NotificationCenterForm(
+                    _pending.Values.ToList(),
+                    Dismiss,
+                    GetReminderStatus,
+                    SetReminderStatus);
                 _centerForm.Show();
             }
             else

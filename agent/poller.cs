@@ -17,17 +17,31 @@ namespace MailDetectorAgent
             // À adapter : l'IP/port de ton backend FastAPI (sur ton PC, donc localhost ici)
             _apiBase = Environment.GetEnvironmentVariable("MAIL_DETECTOR_API") ?? "http://localhost:8000";
 
-            NotificationManager.Configure(async (trackingId) =>
-            {
-                try
+            NotificationManager.Configure(
+                async (trackingId) =>
                 {
-                    await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/ack", null);
-                }
-                catch (Exception ex)
+                    try
+                    {
+                        await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/ack", null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Poller] erreur ack : {ex.Message}");
+                    }
+                },
+                async (trackingId, done) =>
                 {
-                    Console.WriteLine($"[Poller] erreur ack : {ex.Message}");
-                }
-            });
+                    try
+                    {
+                        var json = JsonSerializer.Serialize(new { done });
+                        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                        await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/reminder", content);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Poller] erreur reminder : {ex.Message}");
+                    }
+                });
         }
 
         public void Start()
