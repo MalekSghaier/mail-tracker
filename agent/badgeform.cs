@@ -6,28 +6,28 @@ using System.Windows.Forms;
 namespace MailDetectorAgent
 {
     /// <summary>
-    /// Icône flottante (carré arrondi bleu-teal) avec un badge rouge
-    /// (cerclé de blanc) en haut à droite affichant le nombre d'alertes
-    /// en attente. Tout est dessiné à la main via OnPaint (pas de contrôles
-    /// enfants empilés) pour éviter les bugs de rendu/transparence/z-order
-    /// classiques de WinForms avec des formes superposées.
+    /// Bulle flottante circulaire au style "chic" : dégradé sombre, fine
+    /// bordure dorée, ombre portée douce, icône d'enveloppe dessinée à la
+    /// main (pas un emoji, pour un rendu net et cohérent sur toutes les
+    /// machines), et un badge à dégradé rouge-orangé. Tout est dessiné via
+    /// OnPaint pour un contrôle total du rendu.
     /// Un clic n'importe où ouvre le panneau listant toutes les alertes.
     /// </summary>
     public sealed class BadgeForm : Form
     {
-        private const int IconSize = 56;
-        private const int BadgeSize = 26;
-        private const int RingPad = 3;
-        private const int TotalSize = 72;
+        private const int BubbleSize = 64;
+        private const int BadgeSize = 28;
+        private const int ShadowOffset = 4;
+        private const int TotalSize = BubbleSize + ShadowOffset + 6;
 
-        private static readonly Color IconColor = Color.FromArgb(255, 0, 150, 199);   // bleu-teal
-        private static readonly Color BadgeColor = Color.FromArgb(255, 220, 53, 69);  // rouge vif
+        private static readonly Color GoldAccent = Color.FromArgb(255, 212, 175, 90);
 
-        private readonly Rectangle _iconRect = new(0, TotalSize - IconSize, IconSize, IconSize);
+        private readonly Rectangle _bubbleRect;
         private readonly Rectangle _badgeRect;
-        private readonly Rectangle _ringRect;
+        private readonly Rectangle _shadowRect;
         private readonly ToolTip _toolTip = new();
         private readonly Action _onClick;
+        private readonly System.Windows.Forms.Timer _fadeTimer;
         private int _count;
 
         public BadgeForm(int count, Action onClick)
@@ -35,8 +35,12 @@ namespace MailDetectorAgent
             _onClick = onClick;
             _count = count;
 
-            _badgeRect = new Rectangle(TotalSize - BadgeSize - 2, 2, BadgeSize, BadgeSize);
-            _ringRect = Rectangle.Inflate(_badgeRect, RingPad, RingPad);
+            _bubbleRect = new Rectangle(2, 2, BubbleSize, BubbleSize);
+            _shadowRect = new Rectangle(2 + ShadowOffset, 2 + ShadowOffset, BubbleSize, BubbleSize);
+            _badgeRect = new Rectangle(
+                _bubbleRect.Right - BadgeSize - 4,
+                _bubbleRect.Top - 4,
+                BadgeSize, BadgeSize);
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -46,11 +50,18 @@ namespace MailDetectorAgent
             Height = TotalSize;
             DoubleBuffered = true;
             Cursor = Cursors.Hand;
+            Opacity = 0;
 
-            var ringPath = new GraphicsPath();
-            ringPath.AddEllipse(_ringRect);
-            var combined = new Region(RoundedRectPath(_iconRect, 16));
-            combined.Union(ringPath);
+            var combined = new Region(new Rectangle(0, 0, 0, 0));
+            var shadowPath = new GraphicsPath();
+            shadowPath.AddEllipse(Rectangle.Inflate(_shadowRect, 3, 3));
+            combined.Union(shadowPath);
+            var bubblePath = new GraphicsPath();
+            bubblePath.AddEllipse(Rectangle.Inflate(_bubbleRect, 2, 2));
+            combined.Union(bubblePath);
+            var badgePath = new GraphicsPath();
+            badgePath.AddEllipse(Rectangle.Inflate(_badgeRect, 2, 2));
+            combined.Union(badgePath);
             Region = combined;
 
             var workingArea = Screen.PrimaryScreen.WorkingArea;
@@ -58,6 +69,14 @@ namespace MailDetectorAgent
 
             Click += (_, _) => _onClick();
             UpdateTooltip();
+
+            _fadeTimer = new System.Windows.Forms.Timer { Interval = 15 };
+            _fadeTimer.Tick += (_, _) =>
+            {
+                Opacity = Math.Min(1.0, Opacity + 0.10);
+                if (Opacity >= 1.0) _fadeTimer.Stop();
+            };
+            Load += (_, _) => _fadeTimer.Start();
         }
 
         public void UpdateCount(int count)
@@ -74,28 +93,64 @@ namespace MailDetectorAgent
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            // Icône (carré arrondi bleu) + symbole enveloppe
-            using (var iconBrush = new SolidBrush(IconColor))
-            using (var iconPath = RoundedRectPath(_iconRect, 16))
+            // Ombre portée douce (cercle translucide décalé)
+            using (var shadowBrush = new SolidBrush(Color.FromArgb(70, 0, 0, 0)))
             {
-                g.FillPath(iconBrush, iconPath);
+                g.FillEllipse(shadowBrush, _shadowRect);
             }
-            TextRenderer.DrawText(g, "✉", new Font("Segoe UI Symbol", 18), _iconRect,
-                Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
-            // Anneau blanc puis badge rouge par-dessus (ordre de dessin = ordre d'empilement garanti)
-            using (var ringBrush = new SolidBrush(Color.White))
+            // Bulle principale : dégradé sombre élégant (anthracite -> bleu nuit)
+            using (var bubbleBrush = new LinearGradientBrush(
+                _bubbleRect, Color.FromArgb(255, 44, 44, 84), Color.FromArgb(255, 22, 22, 42),
+                LinearGradientMode.ForwardDiagonal))
             {
-                g.FillEllipse(ringBrush, _ringRect);
+                g.FillEllipse(bubbleBrush, _bubbleRect);
             }
-            using (var badgeBrush = new SolidBrush(BadgeColor))
+
+            // Fine bordure dorée façon "premium"
+            using (var goldPen = new Pen(GoldAccent, 1.6f))
+            {
+                g.DrawEllipse(goldPen, Rectangle.Inflate(_bubbleRect, -1, -1));
+            }
+
+            // Icône enveloppe dessinée à la main (nette, pas un emoji)
+            DrawEnvelope(g, _bubbleRect);
+
+            // Badge : dégradé rouge-orangé
+            using (var badgeBrush = new LinearGradientBrush(
+                _badgeRect, Color.FromArgb(255, 255, 99, 72), Color.FromArgb(255, 214, 40, 40),
+                LinearGradientMode.ForwardDiagonal))
             {
                 g.FillEllipse(badgeBrush, _badgeRect);
             }
 
             string text = _count > 9 ? "9+" : _count.ToString();
-            TextRenderer.DrawText(g, text, new Font("Segoe UI", 9.5f, FontStyle.Bold), _badgeRect,
-                Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            using (var font = new Font("Segoe UI", 11f, FontStyle.Bold))
+            {
+                TextRenderer.DrawText(g, text, font, _badgeRect, Color.White,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+        }
+
+        private static void DrawEnvelope(Graphics g, Rectangle bubbleRect)
+        {
+            int w = (int)(bubbleRect.Width * 0.46);
+            int h = (int)(w * 0.68);
+            int cx = bubbleRect.X + bubbleRect.Width / 2;
+            int cy = bubbleRect.Y + bubbleRect.Height / 2;
+            var rect = new Rectangle(cx - w / 2, cy - h / 2, w, h);
+
+            using var pen = new Pen(Color.White, 1.8f) { LineJoin = LineJoin.Round };
+
+            // Corps de l'enveloppe
+            g.DrawRectangle(pen, rect);
+
+            // Rabat (V renversé)
+            var p1 = new Point(rect.Left, rect.Top);
+            var pTop = new Point(rect.Left + rect.Width / 2, rect.Top + (int)(rect.Height * 0.55));
+            var p2 = new Point(rect.Right, rect.Top);
+            g.DrawLine(pen, p1, pTop);
+            g.DrawLine(pen, pTop, p2);
         }
 
         private void UpdateTooltip()
@@ -103,16 +158,10 @@ namespace MailDetectorAgent
             _toolTip.SetToolTip(this, $"{_count} mails non ouverts — cliquez pour les voir");
         }
 
-        private static GraphicsPath RoundedRectPath(Rectangle rect, int radius)
+        protected override void Dispose(bool disposing)
         {
-            var path = new GraphicsPath();
-            int r = radius;
-            path.AddArc(rect.X, rect.Y, r, r, 180, 90);
-            path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);
-            path.AddArc(rect.Right - r, rect.Bottom - r, r, r, 0, 90);
-            path.AddArc(rect.X, rect.Bottom - r, r, r, 90, 90);
-            path.CloseFigure();
-            return path;
+            if (disposing) _fadeTimer?.Dispose();
+            base.Dispose(disposing);
         }
     }
 }
