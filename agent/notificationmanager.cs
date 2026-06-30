@@ -17,6 +17,7 @@ namespace MailDetectorAgent
     {
         private static readonly Dictionary<string, AlertDto> _pending = new();
         private static readonly Dictionary<string, bool?> _reminderStatus = new(); // cache local, source = backend
+        private static readonly HashSet<string> _minimizedSet = new(); // alertes "X" : en attente, popup masqué
         private static NotificationForm? _singleForm;
         private static BadgeForm? _badgeForm;
         private static NotificationCenterForm? _centerForm;
@@ -68,6 +69,18 @@ namespace MailDetectorAgent
                 _ = _ackCallback?.Invoke(trackingId);
             }
             _reminderStatus.Remove(trackingId);
+            _minimizedSet.Remove(trackingId);
+            Refresh();
+        }
+
+        /// <summary>
+        /// Appelé quand l'utilisateur clique sur la croix (ou le corps) du
+        /// popup unique : le mail reste en attente (pas d'ack, pas de
+        /// changement en base), seul l'affichage bascule sur la bulle.
+        /// </summary>
+        public static void MinimizeSingle(string trackingId)
+        {
+            _minimizedSet.Add(trackingId);
             Refresh();
         }
 
@@ -80,19 +93,32 @@ namespace MailDetectorAgent
                 CloseSingle();
                 CloseBadge();
                 CloseCenter();
+                _minimizedSet.Clear();
                 return;
             }
 
             if (count == 1)
             {
+                var alert = _pending.Values.First();
+
+                if (_minimizedSet.Contains(alert.tracking_id))
+                {
+                    // L'utilisateur a fermé (X) l'unique popup -> on affiche
+                    // seulement la bulle, le mail reste en attente.
+                    CloseSingle();
+                    ShowOrUpdateBadge(count);
+                    _centerForm?.RefreshList(_pending.Values.ToList());
+                    return;
+                }
+
                 CloseBadge();
                 CloseCenter();
                 if (_singleForm == null || _singleForm.IsDisposed)
                 {
-                    var alert = _pending.Values.First();
                     _singleForm = new NotificationForm(
                         alert,
-                        () => Dismiss(alert.tracking_id),
+                        () => Dismiss(alert.tracking_id),            // utilisé après confirmation Oui/Non
+                        () => MinimizeSingle(alert.tracking_id),     // utilisé par la croix / le corps
                         GetReminderStatus(alert.tracking_id),
                         done => SetReminderStatus(alert.tracking_id, done));
                     _singleForm.Show();
@@ -102,7 +128,12 @@ namespace MailDetectorAgent
 
             // count > 1 : on bascule sur la bulle + le panneau, plus de popup individuel
             CloseSingle();
+            ShowOrUpdateBadge(count);
+            _centerForm?.RefreshList(_pending.Values.ToList());
+        }
 
+        private static void ShowOrUpdateBadge(int count)
+        {
             if (_badgeForm == null || _badgeForm.IsDisposed)
             {
                 _badgeForm = new BadgeForm(count, OnBadgeClicked);
@@ -112,12 +143,13 @@ namespace MailDetectorAgent
             {
                 _badgeForm.UpdateCount(count);
             }
-
-            _centerForm?.RefreshList(_pending.Values.ToList());
         }
 
         private static void OnBadgeClicked()
         {
+            // Toujours ouvrir le panneau complet, même pour une seule alerte
+            // minimisée (décision explicite : pas de réouverture directe du
+            // popup individuel depuis la bulle).
             if (_centerForm == null || _centerForm.IsDisposed)
             {
                 _centerForm = new NotificationCenterForm(

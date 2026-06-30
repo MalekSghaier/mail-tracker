@@ -38,13 +38,15 @@ namespace MailDetectorAgent
         private bool? _reminderStatus;
         private readonly Action<bool> _onAnswer;
         private readonly Action _onUserDismiss;
+        private readonly Action _onMinimize;
 
-        public NotificationForm(AlertDto alert, Action onUserDismiss, bool? reminderStatus, Action<bool> onAnswer)
+        public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer)
         {
             _slot = _openCount++;
             _reminderStatus = reminderStatus;
             _onAnswer = onAnswer;
             _onUserDismiss = onUserDismiss;
+            _onMinimize = onMinimize;
 
             bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
             int metaLines = hasCc ? 3 : 2;
@@ -189,6 +191,16 @@ namespace MailDetectorAgent
             Close();
         }
 
+        /// <summary>
+        /// Appelée par la croix ou un clic sur le corps : le mail reste en
+        /// attente (pas d'ack), seule la bulle prend le relais visuellement.
+        /// </summary>
+        private void MinimizeByUser()
+        {
+            _onMinimize();
+            Close();
+        }
+
         private void BuildLayout(AlertDto alert, bool hasCc)
         {
             var accentBar = new Panel { BackColor = GoldAccent, Dock = DockStyle.Left, Width = 4 };
@@ -206,7 +218,7 @@ namespace MailDetectorAgent
             };
             closeButton.MouseEnter += (_, _) => closeButton.ForeColor = Color.White;
             closeButton.MouseLeave += (_, _) => closeButton.ForeColor = CloseIdle;
-            closeButton.Click += (_, _) => DismissByUser();
+            closeButton.Click += (_, _) => MinimizeByUser();
 
             var divider = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = DividerColor };
 
@@ -218,7 +230,7 @@ namespace MailDetectorAgent
 
             var titleLabel = MakeLine("Mail non ouvert", TitleColor,
                 new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), TitleHeight);
-            titleLabel.Click += (_, _) => DismissByUser();
+            titleLabel.Click += (_, _) => MinimizeByUser();
 
             var fromLabel = MakeLine($"De : {alert.sender}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
@@ -246,7 +258,7 @@ namespace MailDetectorAgent
                 Padding = new Padding(0, 6, 0, 0),
                 Cursor = Cursors.Hand,
             };
-            summaryLabel.Click += (_, _) => DismissByUser();
+            summaryLabel.Click += (_, _) => MinimizeByUser();
 
             textHost.Controls.Add(summaryLabel);
             if (ccLabel != null) textHost.Controls.Add(ccLabel);
