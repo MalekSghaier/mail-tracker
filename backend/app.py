@@ -91,7 +91,8 @@ def get_alerts():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary, sent_at
+        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
+                  sent_at, reminder_done
            FROM email_log
            WHERE opened_at IS NULL
            AND alert_acked = FALSE
@@ -110,6 +111,7 @@ def get_alerts():
             "subject": r[4],
             "summary": r[5] or "",
             "sent_at": str(r[6]),
+            "reminder_done": r[7],  # null / true / false
         }
         for r in rows
     ]
@@ -121,6 +123,28 @@ def ack_alert(tracking_id: str):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("UPDATE email_log SET alert_acked = TRUE WHERE tracking_id = %s", (tracking_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True}
+
+
+class ReminderAnswer(BaseModel):
+    done: bool
+
+
+@app.post("/api/alerts/{tracking_id}/reminder")
+def set_reminder(tracking_id: str, payload: ReminderAnswer):
+    """Appelé quand l'employé répond Oui/Non à 'T'as fait le rappel ?'.
+    Persisté en base pour permettre un historique ultérieur."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE email_log
+           SET reminder_done = %s, reminder_answered_at = NOW()
+           WHERE tracking_id = %s""",
+        (payload.done, tracking_id),
+    )
     conn.commit()
     cur.close()
     conn.close()

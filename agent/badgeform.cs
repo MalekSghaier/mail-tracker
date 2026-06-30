@@ -64,7 +64,7 @@ namespace MailDetectorAgent
             combined.Union(badgePath);
             Region = combined;
 
-            var workingArea = Screen.PrimaryScreen.WorkingArea;
+            var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
             Location = new Point(workingArea.Right - TotalSize - 12, workingArea.Bottom - TotalSize - 12);
 
             Click += (_, _) => _onClick();
