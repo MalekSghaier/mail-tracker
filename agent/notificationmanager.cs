@@ -26,18 +26,20 @@ namespace MailDetectorAgent
             _ackCallback = ackCallback;
         }
 
-        public static void AddAlerts(IEnumerable<AlertDto> alerts)
+        public static async Task AddAlertsAsync(IEnumerable<AlertDto> alerts)
         {
-            bool added = false;
             foreach (var a in alerts)
             {
                 if (!_pending.ContainsKey(a.tracking_id))
                 {
                     _pending[a.tracking_id] = a;
-                    added = true;
+                    Refresh();
+                    // Petite pause pour que chaque transition (popup -> badge=2 ->
+                    // badge=3...) soit visible séparément, même si toutes les
+                    // alertes sont arrivées dans la même réponse API (poll batché).
+                    await Task.Delay(600);
                 }
             }
-            if (added) Refresh();
         }
 
         public static void Dismiss(string trackingId)

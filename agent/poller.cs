@@ -32,15 +32,19 @@ namespace MailDetectorAgent
 
         public void Start()
         {
-            _timer = new System.Windows.Forms.Timer { Interval = 15_000 }; // 15 sec
+            _timer = new System.Windows.Forms.Timer { Interval = 3_000 }; // 3 sec
             _timer.Tick += async (_, _) => await CheckAlertsAsync();
             _timer.Start();
         }
 
         public void Stop() => _timer?.Stop();
 
+        private bool _busy = false;
+
         private async Task CheckAlertsAsync()
         {
+            if (_busy) return; // évite le chevauchement si un cycle précédent est encore en cours
+            _busy = true;
             try
             {
                 var json = await _http.GetStringAsync($"{_apiBase}/api/alerts");
@@ -50,13 +54,18 @@ namespace MailDetectorAgent
 
                 if (alerts == null) return;
 
-                // L'ack n'est plus fait ici automatiquement : NotificationManager
-                // ne l'envoie que lorsque l'utilisateur ferme réellement la notification.
-                NotificationManager.AddAlerts(alerts);
+                // Traite les alertes une par une (avec un court délai entre
+                // chacune) pour que la transition popup -> badge=2 -> badge=3
+                // soit visible, même si toutes arrivent dans le même poll.
+                await NotificationManager.AddAlertsAsync(alerts);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Poller] erreur : {ex.Message}");
+            }
+            finally
+            {
+                _busy = false;
             }
         }
     }
