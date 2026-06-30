@@ -40,12 +40,17 @@ def generer_resume(body_text: str) -> str:
 
     prompt = (
         "Voici un e-mail professionnel reçu par un employé. Ta tâche est UNIQUEMENT de "
-        "résumer ce message en une phrase, du point de vue d'un observateur extérieur. "
-        "Ne réponds JAMAIS au message, n'invente AUCUN contenu, ne donne aucun avis.\n\n"
-        "Exemple :\n"
+        "résumer ce message en une phrase complète, du point de vue d'un observateur "
+        "extérieur. Ne réponds JAMAIS au message, n'invente AUCUN contenu, ne donne "
+        "aucun avis. Ne réponds JAMAIS par un seul mot : ta phrase doit mentionner à "
+        "la fois le sujet et l'action ou l'information principale du message.\n\n"
+        "Exemple 1 :\n"
         "Message : « Bonjour, peux-tu m'envoyer le rapport mensuel avant 17h ? »\n"
         "Résumé : Demande d'envoi du rapport mensuel avant 17h.\n\n"
-        "Maintenant, résume ce message de la même façon (une seule phrase, "
+        "Exemple 2 :\n"
+        "Message : « La livraison du matériel est prévue lundi prochain. »\n"
+        "Résumé : Information sur la livraison du matériel prévue lundi prochain.\n\n"
+        "Maintenant, résume ce message de la même façon (une phrase complète, "
         "rien d'autre) :\n"
         f"« {body_text} »\n"
         "Résumé :"
@@ -67,8 +72,8 @@ def generer_resume(body_text: str) -> str:
         resp.raise_for_status()
         resume = resp.json().get("response", "").strip()
 
-        if not resume or not _resume_coherent(body_text, resume):
-            print(f"[ollama_client] résumé rejeté (incohérent) : {resume!r} — fallback utilisé")
+        if not resume or not _resume_coherent(body_text, resume) or len(resume.split()) < 4:
+            print(f"[ollama_client] résumé rejeté (incohérent ou trop court) : {resume!r} — fallback utilisé")
             return fallback
 
         return resume

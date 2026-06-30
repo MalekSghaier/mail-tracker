@@ -36,6 +36,7 @@ def get_conn():
 class EmailRegister(BaseModel):
     sender_email: str
     recipient_email: str
+    cc_email: str | None = None
     subject: str
     body: str
 
@@ -57,9 +58,9 @@ def register_email(payload: EmailRegister):
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO email_log
-           (tracking_id, sender_email, recipient_email, subject, body, ai_summary)
-           VALUES (%s, %s, %s, %s, %s, %s)""",
-        (tracking_id, payload.sender_email, payload.recipient_email,
+           (tracking_id, sender_email, recipient_email, cc_email, subject, body, ai_summary)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (tracking_id, payload.sender_email, payload.recipient_email, payload.cc_email,
          payload.subject, payload.body, ai_summary),
     )
     conn.commit()
@@ -90,7 +91,7 @@ def get_alerts():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT tracking_id, sender_email, recipient_email, subject, ai_summary, sent_at
+        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary, sent_at
            FROM email_log
            WHERE opened_at IS NULL
            AND alert_acked = FALSE
@@ -105,9 +106,10 @@ def get_alerts():
             "tracking_id": r[0],
             "sender": r[1],
             "recipient": r[2],
-            "subject": r[3],
-            "summary": r[4] or "",
-            "sent_at": str(r[5]),
+            "cc": r[3] or "",
+            "subject": r[4],
+            "summary": r[5] or "",
+            "sent_at": str(r[6]),
         }
         for r in rows
     ]

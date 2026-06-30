@@ -8,16 +8,26 @@ namespace MailDetectorAgent
 {
     public sealed class Poller
     {
-        private readonly NotifyIcon _trayIcon;
         private readonly HttpClient _http = new();
         private readonly string _apiBase;
         private System.Windows.Forms.Timer? _timer;
 
         public Poller(NotifyIcon trayIcon)
         {
-            _trayIcon = trayIcon;
             // À adapter : l'IP/port de ton backend FastAPI (sur ton PC, donc localhost ici)
             _apiBase = Environment.GetEnvironmentVariable("MAIL_DETECTOR_API") ?? "http://localhost:8000";
+
+            NotificationManager.Configure(async (trackingId) =>
+            {
+                try
+                {
+                    await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/ack", null);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Poller] erreur ack : {ex.Message}");
+                }
+            });
         }
 
         public void Start()
@@ -40,11 +50,9 @@ namespace MailDetectorAgent
 
                 if (alerts == null) return;
 
-                foreach (var alert in alerts)
-                {
-                    Notifier.Show(_trayIcon, alert);
-                    await _http.PostAsync($"{_apiBase}/api/alerts/{alert.tracking_id}/ack", null);
-                }
+                // L'ack n'est plus fait ici automatiquement : NotificationManager
+                // ne l'envoie que lorsque l'utilisateur ferme réellement la notification.
+                NotificationManager.AddAlerts(alerts);
             }
             catch (Exception ex)
             {
