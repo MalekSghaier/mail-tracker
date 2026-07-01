@@ -162,7 +162,17 @@ namespace MailDetectorAgent
             };
             ApplyRounded(card, 16, CardWidth, cardHeight);
 
-            var accent = new Panel { BackColor = GoldAccent, Dock = DockStyle.Left, Width = 4 };
+            var accent = new Panel
+            {
+                BackColor = alert.category switch
+                {
+                    "seen_no_answer" => Color.FromArgb(255, 90, 156, 240), // bleu
+                    "not_validated"  => Color.FromArgb(255, 212, 96, 96),  // rouge
+                    _                => GoldAccent,                         // doré
+                },
+                Dock = DockStyle.Left,
+                Width = 4,
+            };
 
             var close = new Label
             {
@@ -186,7 +196,13 @@ namespace MailDetectorAgent
                 Padding = new Padding(16, 0, 14, 0),
             };
 
-            var title = MakeLine("Mail non ouvert", Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);
+            string titleText = alert.category switch
+            {
+                "seen_no_answer" => "Vu — rappel en attente",
+                "not_validated"  => "Non validé — rappel non effectué",
+                _                => "Mail non ouvert",
+            };
+            var title = MakeLine(titleText, Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);
             title.Cursor = Cursors.Hand;
             title.Click += (_, _) => OpenDetailPage(alert.tracking_id);
             var from = MakeLine($"De : {alert.sender}", MetaColor, new Font("Segoe UI", 8.25f), 17);

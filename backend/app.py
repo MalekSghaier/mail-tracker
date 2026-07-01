@@ -22,6 +22,7 @@ load_dotenv()
 app = FastAPI(title="Mail Detector POC")
 
 THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
+RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
 
 
 def get_conn():
@@ -88,9 +89,41 @@ def track(tracking_id: str):
 
 @app.get("/api/alerts")
 def get_alerts():
-    """Liste des mails non ouverts depuis plus de ALERT_THRESHOLD_MINUTES."""
+    """Retourne 3 catégories d'alertes :
+    - 'pending'        : en attente (alert_acked=FALSE)
+    - 'seen_no_answer' : vu sans réponse au rappel (alert_acked=TRUE, reminder_done=NULL)
+    - 'not_validated'  : rappel non effectué (reminder_done=FALSE)
+    Réinitialise aussi les re-checks échus."""
     conn = get_conn()
     cur = conn.cursor()
+
+    # Réinitialise les alertes dont le délai de re-check est écoulé.
+    cur.execute(
+        """UPDATE email_log
+           SET alert_acked = FALSE,
+               reminder_recheck_at = NULL
+           WHERE reminder_done = FALSE
+           AND reminder_recheck_at IS NOT NULL
+           AND reminder_recheck_at < NOW()"""
+    )
+    conn.commit()
+
+    def make_row(r, category):
+        return {
+            "tracking_id": str(r[0]),
+            "sender": r[1],
+            "recipient": r[2],
+            "cc": r[3] or "",
+            "subject": r[4] or "",
+            "summary": r[5] or "",
+            "sent_at": str(r[6]),
+            "reminder_done": r[7],
+            "category": category,
+        }
+
+    results = []
+
+    # 1. En attente (déclenche les popups)
     cur.execute(
         """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
                   sent_at, reminder_done
@@ -100,22 +133,35 @@ def get_alerts():
            AND sent_at < NOW() - (%s * INTERVAL '1 minute')""",
         (THRESHOLD_MINUTES,),
     )
-    rows = cur.fetchall()
+    for r in cur.fetchall():
+        results.append(make_row(r, "pending"))
+
+    # 2. Vu sans réponse au rappel (silencieux — juste dans le panneau)
+    cur.execute(
+        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
+                  sent_at, reminder_done
+           FROM email_log
+           WHERE alert_acked = TRUE
+           AND reminder_done IS NULL
+           AND opened_at IS NULL""",
+    )
+    for r in cur.fetchall():
+        results.append(make_row(r, "seen_no_answer"))
+
+    # 3. Non validé après rappel (silencieux — juste dans le panneau)
+    cur.execute(
+        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
+                  sent_at, reminder_done
+           FROM email_log
+           WHERE reminder_done = FALSE
+           AND reminder_recheck_at IS NOT NULL""",
+    )
+    for r in cur.fetchall():
+        results.append(make_row(r, "not_validated"))
+
     cur.close()
     conn.close()
-    return [
-        {
-            "tracking_id": r[0],
-            "sender": r[1],
-            "recipient": r[2],
-            "cc": r[3] or "",
-            "subject": r[4],
-            "summary": r[5] or "",
-            "sent_at": str(r[6]),
-            "reminder_done": r[7],  # null / true / false
-        }
-        for r in rows
-    ]
+    return results
 
 
 @app.post("/api/alerts/{tracking_id}/ack")
@@ -137,14 +183,99 @@ class ReminderAnswer(BaseModel):
 @app.post("/api/alerts/{tracking_id}/reminder")
 def set_reminder(tracking_id: str, payload: ReminderAnswer):
     """Appelé quand l'employé répond Oui/Non à 'Rappel effectué ?'.
-    Persisté en base pour permettre un historique ultérieur."""
+    Si Non : planifie une ré-alerte automatique après REMINDER_RECHECK_MINUTES."""
+    conn = get_conn()
+    cur = conn.cursor()
+    if payload.done:
+        # Oui : enregistre la réponse, annule tout recheck programmé
+        cur.execute(
+            """UPDATE email_log
+               SET reminder_done = TRUE,
+                   reminder_answered_at = NOW(),
+                   reminder_recheck_at = NULL
+               WHERE tracking_id = %s""",
+            (tracking_id,),
+        )
+    else:
+        # Non : enregistre la réponse ET planifie une ré-alerte
+        cur.execute(
+            """UPDATE email_log
+               SET reminder_done = FALSE,
+                   reminder_answered_at = NOW(),
+                   reminder_recheck_at = NOW() + (%s * INTERVAL '1 minute')
+               WHERE tracking_id = %s""",
+            (RECHECK_MINUTES, tracking_id),
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
+
+
+class TrackingIds(BaseModel):
+    ids: list
+
+
+@app.post("/api/alerts/states")
+def get_states(payload: TrackingIds):
+    """Retourne l'état actuel (alert_acked, reminder_done) pour une liste
+    de tracking_ids — y compris ceux déjà ackés. Utilisé par l'agent pour
+    synchroniser son état local avec la base en temps quasi-réel."""
+    if not payload.ids:
+        return {}
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT tracking_id, alert_acked, reminder_done
+           FROM email_log
+           WHERE tracking_id = ANY(%s)""",
+        (payload.ids,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {
+        str(r[0]): {"alert_acked": r[1], "reminder_done": r[2]}
+        for r in rows
+    }
+
+
+@app.get("/api/alerts/{tracking_id}/status")
+def get_alert_status(tracking_id: str):
+    """Endpoint léger pour le polling JS de la page web.
+    Retourne uniquement l'état actuel du rappel et de l'ouverture."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT reminder_done, reminder_answered_at, opened_at
+           FROM email_log WHERE tracking_id = %s""",
+        (tracking_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return {"error": "not found"}
+    return {
+        "reminder_done": row[0],
+        "reminder_answered_at": str(row[1]) if row[1] else None,
+        "opened_at": str(row[2]) if row[2] else None,
+    }
+
+
+@app.post("/api/alerts/{tracking_id}/finally-done")
+def finally_done(tracking_id: str):
+    """Appelé depuis la page web quand l'employé clique 'J'ai finalement
+    fait le rappel'. Passe reminder_done à TRUE et annule le recheck."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """UPDATE email_log
-           SET reminder_done = %s, reminder_answered_at = NOW()
+           SET reminder_done = TRUE,
+               reminder_answered_at = NOW(),
+               reminder_recheck_at = NULL
            WHERE tracking_id = %s""",
-        (payload.done, tracking_id),
+        (tracking_id,),
     )
     conn.commit()
     cur.close()
@@ -183,6 +314,46 @@ def get_history():
         }
         for r in rows
     ]
+
+
+def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
+    """Génère le bloc HTML du rappel selon l'état actuel."""
+    tid = tracking_id
+    if reminder_done is True:
+        return (
+            f'<div class="reminder-done reminder-yes">'
+            f'<span class="reminder-icon">✓</span>'
+            f'<span>Rappel effectué — répondu le {fmt_date(reminder_at)}</span>'
+            f'</div>'
+        )
+    if reminder_done is False:
+        return (
+            f'<div class="reminder-not-done">'
+            f'<div class="reminder-not-done-row">'
+            f'<div class="reminder-done reminder-no">'
+            f'<span class="reminder-icon">✗</span>'
+            f'<span>Rappel non effectué — répondu le {fmt_date(reminder_at)}</span>'
+            f'</div>'
+            f'<button class="btn-finally-done" onclick="finallyDone(\'{tid}\')">'
+            f'<span>✓</span> J\'ai finalement fait le rappel'
+            f'</button>'
+            f'</div>'
+            f'<div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>'
+            f'</div>'
+        )
+    return (
+        f'<div class="reminder-question">'
+        f'<span class="reminder-label">Rappel effectué ?</span>'
+        f'<div class="reminder-buttons">'
+        f'<button class="btn-reminder btn-oui" onclick="submitReminder(\'{tid}\', true)">'
+        f'<span class="btn-check">✓</span> Oui'
+        f'</button>'
+        f'<button class="btn-reminder btn-non" onclick="submitReminder(\'{tid}\', false)">'
+        f'<span class="btn-cross">✗</span> Non'
+        f'</button>'
+        f'</div>'
+        f'</div>'
+    )
 
 
 @app.get("/mail/{tracking_id}", response_class=HTMLResponse)
@@ -442,12 +613,233 @@ def mail_detail_page(tracking_id: str):
   td {{ padding: 14px 20px; color: var(--text); vertical-align: middle; }}
   td.td-subject {{ max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 
+  .reminder-not-done {{
+    display: flex; flex-direction: column; gap: 10px;
+  }}
+  .reminder-not-done-row {{
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }}
+  .btn-finally-done {{
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 20px;
+    background: rgba(212,175,90,.12);
+    color: var(--gold);
+    border: 1px solid rgba(212,175,90,.3);
+    border-radius: 30px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+    align-self: flex-start;
+  }}
+  .btn-finally-done:hover {{ opacity: .8; transform: translateY(-1px); }}
+  .recheck-notice {{
+    font-size: 12px; color: var(--amber);
+    display: flex; align-items: center; gap: 6px;
+  }}
+
+  /* ── Section rappel ── */
+  .mail-reminder-section {{
+    padding: 20px 32px 24px;
+    display: flex; align-items: center; gap: 20px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }}
+  .reminder-label {{
+    font-size: 13px; color: var(--meta);
+    flex-shrink: 0;
+  }}
+  .reminder-buttons {{ display: flex; gap: 10px; }}
+  .btn-reminder {{
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 20px;
+    border: none; border-radius: 30px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }}
+  .btn-reminder:hover {{ opacity: .85; transform: translateY(-1px); }}
+  .btn-reminder:active {{ transform: translateY(0); }}
+  .btn-oui {{
+    background: rgba(72,178,128,.18);
+    color: var(--green);
+    border: 1px solid rgba(72,178,128,.35);
+  }}
+  .btn-non {{
+    background: rgba(212,96,96,.15);
+    color: var(--red);
+    border: 1px solid rgba(212,96,96,.3);
+  }}
+  .btn-check {{ font-size: 14px; color: var(--green); }}
+  .btn-cross {{ font-size: 14px; color: var(--red); }}
+  .reminder-done {{
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; font-weight: 600;
+    padding: 8px 16px; border-radius: 30px;
+  }}
+  .reminder-yes {{
+    background: rgba(72,178,128,.12);
+    color: var(--green);
+    border: 1px solid rgba(72,178,128,.25);
+  }}
+  .reminder-no {{
+    background: rgba(212,96,96,.12);
+    color: var(--red);
+    border: 1px solid rgba(212,96,96,.25);
+  }}
+  .reminder-icon {{ font-size: 15px; }}
+  .reminder-question {{ display: flex; align-items: center; gap: 16px; }}
+
   /* ── Animation ── */
   @keyframes fadeUp {{
     from {{ opacity: 0; transform: translateY(14px); }}
     to   {{ opacity: 1; transform: translateY(0); }}
   }}
 </style>
+<script>
+// Polling temps réel : synchronise l'état du rappel avec le backend toutes les 3s.
+// Si l'état a changé (ex. répondu depuis le panneau de l'agent), la section se
+// met à jour sans rechargement de page.
+(function startPolling() {{
+  const tid = '{str(tracking_id)}';
+  let lastState = '{str(row[10])}'; // valeur initiale connue au chargement
+
+  setInterval(async () => {{
+    try {{
+      const resp = await fetch(`/api/alerts/${{tid}}/status`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const newState = String(data.reminder_done);
+
+      if (newState !== lastState) {{
+        lastState = newState;
+        const section = document.getElementById('reminder-section');
+        if (!section) return;
+
+        const dt = data.reminder_answered_at
+          ? new Date(data.reminder_answered_at).toLocaleString('fr-FR', {{
+              day:'2-digit', month:'2-digit', year:'numeric',
+              hour:'2-digit', minute:'2-digit'
+            }})
+          : '—';
+
+        if (data.reminder_done === true) {{
+          section.innerHTML = `
+            <div class="reminder-done reminder-yes">
+              <span class="reminder-icon">✓</span>
+              <span>Rappel effectué — répondu le ${{dt}}</span>
+            </div>`;
+        }} else if (data.reminder_done === false) {{
+          section.innerHTML = `
+            <div class="reminder-not-done">
+              <div class="reminder-not-done-row">
+                <div class="reminder-done reminder-no">
+                  <span class="reminder-icon">✗</span>
+                  <span>Rappel non effectué — répondu le ${{dt}}</span>
+                </div>
+                <button class="btn-finally-done" onclick="finallyDone('${{tid}}')">
+                  <span>✓</span> J'ai finalement fait le rappel
+                </button>
+              </div>
+              <div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>
+            </div>`;
+        }} else {{
+          section.innerHTML = `
+            <div class="reminder-question">
+              <span class="reminder-label">Rappel effectué ?</span>
+              <div class="reminder-buttons">
+                <button class="btn-reminder btn-oui" onclick="submitReminder('${{tid}}', true)">
+                  <span class="btn-check">✓</span> Oui
+                </button>
+                <button class="btn-reminder btn-non" onclick="submitReminder('${{tid}}', false)">
+                  <span class="btn-cross">✗</span> Non
+                </button>
+              </div>
+            </div>`;
+        }}
+      }}
+    }} catch(e) {{ /* réseau indisponible — on réessaie au prochain tick */ }}
+  }}, 3000);
+}})();
+
+async function submitReminder(trackingId, done) {{
+  const section = document.getElementById('reminder-section');
+  section.style.opacity = '0.5';
+  section.style.pointerEvents = 'none';
+
+  try {{
+    const resp = await fetch(`/api/alerts/${{trackingId}}/reminder`, {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ done }})
+    }});
+
+    if (resp.ok) {{
+      const data = await resp.json();
+      const now = new Date().toLocaleString('fr-FR', {{
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      }});
+      if (done) {{
+        section.innerHTML = `
+          <div class="reminder-done reminder-yes">
+            <span class="reminder-icon">✓</span>
+            <span>Rappel effectué — répondu le ${{now}}</span>
+          </div>`;
+      }} else {{
+        section.innerHTML = `
+          <div class="reminder-not-done">
+            <div class="reminder-not-done-row">
+              <div class="reminder-done reminder-no">
+                <span class="reminder-icon">✗</span>
+                <span>Rappel non effectué — répondu le ${{now}}</span>
+              </div>
+              <button class="btn-finally-done" onclick="finallyDone('${{trackingId}}')">
+                <span>✓</span> J'ai finalement fait le rappel
+              </button>
+            </div>
+            <div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement dans ${{data.recheck_in_minutes}} min.</div>
+          </div>`;
+      }}
+      section.style.opacity = '1';
+      section.style.pointerEvents = 'auto';
+    }}
+  }} catch(e) {{
+    section.style.opacity = '1';
+    section.style.pointerEvents = 'auto';
+  }}
+}}
+
+async function finallyDone(trackingId) {{
+  const section = document.getElementById('reminder-section');
+  section.style.opacity = '0.5';
+  section.style.pointerEvents = 'none';
+
+  try {{
+    const resp = await fetch(`/api/alerts/${{trackingId}}/finally-done`, {{
+      method: 'POST'
+    }});
+
+    if (resp.ok) {{
+      const now = new Date().toLocaleString('fr-FR', {{
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      }});
+      section.innerHTML = `
+        <div class="reminder-done reminder-yes">
+          <span class="reminder-icon">✓</span>
+          <span>Rappel effectué — répondu le ${{now}}</span>
+        </div>`;
+    }}
+    section.style.opacity = '1';
+    section.style.pointerEvents = 'auto';
+  }} catch(e) {{
+    section.style.opacity = '1';
+    section.style.pointerEvents = 'auto';
+  }}
+}}
+</script>
 </head>
 <body>
 <header class="header">
@@ -482,8 +874,12 @@ def mail_detail_page(tracking_id: str):
     <div class="mail-status-row">
       {status_badge(row[8], row[9], row[10])}
       <span style="font-size:12px;color:var(--meta);">
-        {'Rappel répondu le ' + fmt_date(row[11]) if row[11] else 'Aucune réponse au rappel pour l\'instant'}
+        {'Rappel répondu le ' + fmt_date(row[11]) if row[11] else "Aucune réponse au rappel pour l'instant"}
       </span>
+    </div>
+
+    <div class="mail-reminder-section" id="reminder-section">
+      {_reminder_html(str(tracking_id), row[10], row[11], fmt_date)}
     </div>
   </div>
 
