@@ -45,21 +45,62 @@ namespace MailDetectorAgent
 
         public static async Task AddAlertsAsync(IEnumerable<AlertDto> alerts)
         {
+            bool centerNeedsRefresh = false;
+
             foreach (var a in alerts)
             {
-                if (!_pending.ContainsKey(a.tracking_id))
+                bool isSilent = a.category == "seen_no_answer" || a.category == "not_validated";
+                bool isNew = !_pending.ContainsKey(a.tracking_id);
+
+                if (isSilent)
                 {
-                    _pending[a.tracking_id] = a;
-                    // Le backend peut déjà connaître une réponse précédente
-                    // (ex. après redémarrage de l'agent) -> on la récupère.
-                    _reminderStatus[a.tracking_id] = a.reminder_done;
-                    Refresh();
-                    // Petite pause pour que chaque transition (popup -> badge=2 ->
-                    // badge=3...) soit visible séparément, même si toutes les
-                    // alertes sont arrivées dans la même réponse API (poll batché).
-                    await Task.Delay(600);
+                    // Alertes silencieuses : ajoutées dans le panneau et le
+                    // compteur de la bulle, mais sans jamais déclencher de popup.
+                    if (isNew)
+                    {
+                        _pending[a.tracking_id] = a;
+                        _reminderStatus[a.tracking_id] = a.reminder_done;
+                        _minimizedSet.Add(a.tracking_id); // force le mode "bulle" dès le départ
+                        centerNeedsRefresh = true;
+                        Refresh(); // met à jour le compteur de la bulle
+                    }
+                    else
+                    {
+                        bool changed = !Equals(
+                            _reminderStatus.GetValueOrDefault(a.tracking_id),
+                            a.reminder_done);
+                        if (changed)
+                        {
+                            _reminderStatus[a.tracking_id] = a.reminder_done;
+                            centerNeedsRefresh = true;
+                        }
+                    }
+                }
+                else // "pending" : flux normal avec popup
+                {
+                    if (isNew)
+                    {
+                        _pending[a.tracking_id] = a;
+                        _reminderStatus[a.tracking_id] = a.reminder_done;
+                        Refresh();
+                        await Task.Delay(600);
+                    }
+                    else
+                    {
+                        bool changed = !Equals(
+                            _reminderStatus.GetValueOrDefault(a.tracking_id),
+                            a.reminder_done);
+                        if (changed)
+                        {
+                            _reminderStatus[a.tracking_id] = a.reminder_done;
+                            centerNeedsRefresh = true;
+                        }
+                    }
                 }
             }
+
+            if (centerNeedsRefresh)
+                _centerForm?.RefreshList(_pending.Values.ToList());
         }
 
         public static void Dismiss(string trackingId)
