@@ -187,6 +187,8 @@ namespace MailDetectorAgent
             };
 
             var title = MakeLine("Mail non ouvert", Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);
+            title.Cursor = Cursors.Hand;
+            title.Click += (_, _) => OpenDetailPage(alert.tracking_id);
             var from = MakeLine($"De : {alert.sender}", MetaColor, new Font("Segoe UI", 8.25f), 17);
             var to = MakeLine($"À : {alert.recipient}", MetaColor, new Font("Segoe UI", 8.25f), 17);
 
@@ -301,6 +303,19 @@ namespace MailDetectorAgent
                 };
                 reminderPanel.Controls.Add(statusLabel);
             }
+        }
+
+        private static void OpenDetailPage(string trackingId)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = $"http://localhost:8000/mail/{trackingId}",
+                    UseShellExecute = true,
+                });
+            }
+            catch { }
         }
 
         private static Label MakeLine(string text, Color color, Font font, int height, bool fill = false)

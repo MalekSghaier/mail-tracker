@@ -39,6 +39,7 @@ namespace MailDetectorAgent
         private readonly Action<bool> _onAnswer;
         private readonly Action _onUserDismiss;
         private readonly Action _onMinimize;
+        private readonly string _detailUrl;
 
         public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer)
         {
@@ -47,6 +48,7 @@ namespace MailDetectorAgent
             _onAnswer = onAnswer;
             _onUserDismiss = onUserDismiss;
             _onMinimize = onMinimize;
+            _detailUrl = $"http://localhost:8000/mail/{alert.tracking_id}";
 
             bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
             int metaLines = hasCc ? 3 : 2;
@@ -201,6 +203,19 @@ namespace MailDetectorAgent
             Close();
         }
 
+        private void OpenDetailPage()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _detailUrl,
+                    UseShellExecute = true,
+                });
+            }
+            catch { /* navigateur non disponible, on ignore */ }
+        }
+
         private void BuildLayout(AlertDto alert, bool hasCc)
         {
             var accentBar = new Panel { BackColor = GoldAccent, Dock = DockStyle.Left, Width = 4 };
@@ -230,7 +245,7 @@ namespace MailDetectorAgent
 
             var titleLabel = MakeLine("Mail non ouvert", TitleColor,
                 new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), TitleHeight);
-            titleLabel.Click += (_, _) => MinimizeByUser();
+            titleLabel.Click += (_, _) => OpenDetailPage();
 
             var fromLabel = MakeLine($"De : {alert.sender}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
@@ -258,7 +273,7 @@ namespace MailDetectorAgent
                 Padding = new Padding(0, 6, 0, 0),
                 Cursor = Cursors.Hand,
             };
-            summaryLabel.Click += (_, _) => MinimizeByUser();
+            summaryLabel.Click += (_, _) => OpenDetailPage();
 
             textHost.Controls.Add(summaryLabel);
             if (ccLabel != null) textHost.Controls.Add(ccLabel);
