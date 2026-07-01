@@ -338,7 +338,6 @@ def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> st
             f'<span>✓</span> J\'ai finalement fait le rappel'
             f'</button>'
             f'</div>'
-            f'<div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>'
             f'</div>'
         )
     return (
@@ -742,7 +741,6 @@ def mail_detail_page(tracking_id: str):
                   <span>✓</span> J'ai finalement fait le rappel
                 </button>
               </div>
-              <div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>
             </div>`;
         }} else {{
           section.innerHTML = `
@@ -761,6 +759,56 @@ def mail_detail_page(tracking_id: str):
       }}
     }} catch(e) {{ /* réseau indisponible — on réessaie au prochain tick */ }}
   }}, 3000);
+}})();
+// Polling du tableau d'historique : recharge /api/history toutes les 3s
+// et reconstruit les lignes, pour refléter en temps réel les changements
+// faits depuis n'importe quelle autre page (ou l'agent C#).
+(function startHistoryPolling() {{
+  const currentTid = '{str(tracking_id)}';
+
+  function fmtDate(d) {{
+    if (!d) return '—';
+    return String(d).slice(0, 16).replace('T', ' ');
+  }}
+
+  function escapeHtml(s) {{
+    const div = document.createElement('div');
+    div.textContent = s || '';
+    return div.innerHTML;
+  }}
+
+  function statusBadge(opened, acked, reminder) {{
+    if (opened) return '<span class="badge badge-opened">Ouvert</span>';
+    if (reminder === true) return '<span class="badge badge-yes">Rappel fait</span>';
+    if (reminder === false) return '<span class="badge badge-no">Rappel non fait</span>';
+    if (acked) return '<span class="badge badge-acked">Vu — sans réponse</span>';
+    return '<span class="badge badge-pending">En attente</span>';
+  }}
+
+  async function refreshHistory() {{
+    try {{
+      const resp = await fetch('/api/history');
+      if (!resp.ok) return;
+      const rows = await resp.json();
+
+      const tbody = document.getElementById('history-tbody');
+      if (!tbody) return;
+
+      tbody.innerHTML = rows.map(h => {{
+        const isCurrent = h.tracking_id === currentTid ? 'row-current' : '';
+        return `
+        <tr class="${{isCurrent}}" onclick="window.location='/mail/${{h.tracking_id}}'">
+            <td class="td-subject">${{escapeHtml(h.subject)}}</td>
+            <td>${{escapeHtml(h.sender)}}</td>
+            <td>${{escapeHtml(h.recipient)}}</td>
+            <td>${{fmtDate(h.sent_at)}}</td>
+            <td>${{statusBadge(h.opened_at, h.alert_acked, h.reminder_done)}}</td>
+        </tr>`;
+      }}).join('');
+    }} catch(e) {{ /* réseau indisponible — on réessaie au prochain tick */ }}
+  }}
+
+  setInterval(refreshHistory, 3000);
 }})();
 
 async function submitReminder(trackingId, done) {{
@@ -896,7 +944,7 @@ async function finallyDone(trackingId) {{
           <th>Statut</th>
         </tr>
       </thead>
-      <tbody>{history_rows}</tbody>
+      <tbody id="history-tbody">{history_rows}</tbody>
     </table>
   </div>
 </main>
