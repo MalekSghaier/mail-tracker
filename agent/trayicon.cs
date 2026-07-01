@@ -17,9 +17,9 @@ namespace MailDetectorAgent
         {
             _trayIcon = new NotifyIcon
             {
-                Icon = SystemIcons.Information,
+                Icon = new Icon(@"C:\Users\DELL\Desktop\mail-tracker\agent\Assets\favicon.ico"),
                 Visible = true,
-                Text = "Mail Detector Agent (POC)",
+                Text = "Mail Detector Agent",
             };
 
             var menu = new ContextMenuStrip();

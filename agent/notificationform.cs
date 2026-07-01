@@ -40,6 +40,8 @@ namespace MailDetectorAgent
         private readonly Action _onUserDismiss;
         private readonly Action _onMinimize;
         private readonly string _detailUrl;
+        public string TrackingId { get; }
+
 
         public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer)
         {
@@ -49,6 +51,7 @@ namespace MailDetectorAgent
             _onUserDismiss = onUserDismiss;
             _onMinimize = onMinimize;
             _detailUrl = $"http://localhost:8000/mail/{alert.tracking_id}";
+            TrackingId = alert.tracking_id;
 
             bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
             int metaLines = hasCc ? 3 : 2;
@@ -158,14 +161,33 @@ namespace MailDetectorAgent
                 _reminderPanel.Controls.Add(statusLabel);
             }
         }
-
         private void Answer(bool done)
         {
             _reminderStatus = done;
             _onAnswer(done); // persiste en base via le backend
+            ShowConfirmationAndAutoClose(done);
+        }
 
-            // Affiche un message de confirmation, puis ferme automatiquement
-            // le popup après un court délai — pour Oui ET pour Non.
+        /// <summary>
+        /// Appelé par NotificationManager quand le rappel a été répondu
+        /// ailleurs (page web). Met à jour l'affichage sans repersister
+        /// en base (déjà fait côté web).
+        /// </summary>
+        public void ApplyExternalAnswer(bool done)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => ApplyExternalAnswer(done)));
+                return;
+            }
+            if (_reminderStatus == done) return; // déjà à jour, rien à faire
+            _reminderStatus = done;
+            ShowConfirmationAndAutoClose(done);
+        }
+
+        private void ShowConfirmationAndAutoClose(bool done)
+        {
             _reminderPanel.Controls.Clear();
             var confirmLabel = new Label
             {
@@ -186,6 +208,8 @@ namespace MailDetectorAgent
             };
             confirmTimer.Start();
         }
+
+
 
         private void DismissByUser()
         {

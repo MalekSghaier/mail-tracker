@@ -42,27 +42,41 @@ namespace MailDetectorAgent
             // un court message de confirmation, via le même Dismiss() que
             // pour la croix — pour les deux réponses Oui et Non.
         }
-
         public static async Task AddAlertsAsync(IEnumerable<AlertDto> alerts)
         {
+            var alertList = alerts.ToList();
+            var currentIds = new HashSet<string>(alertList.Select(a => a.tracking_id));
             bool centerNeedsRefresh = false;
 
-            foreach (var a in alerts)
+            // Purge des alertes qui ont disparu du dernier poll (ex : résolues
+            // depuis la page web -> ne matchent plus aucune des 3 requêtes SQL
+            // côté backend -> /api/alerts ne les renvoie plus).
+            var goneIds = _pending.Keys.Where(id => !currentIds.Contains(id)).ToList();
+            bool anyGone = goneIds.Count > 0;
+            foreach (var id in goneIds)
+            {
+                _pending.Remove(id);
+                _reminderStatus.Remove(id);
+                _minimizedSet.Remove(id);
+
+                if (_singleForm != null && !_singleForm.IsDisposed && _singleForm.TrackingId == id)
+                    _singleForm.Close();
+            }
+
+            foreach (var a in alertList)
             {
                 bool isSilent = a.category == "seen_no_answer" || a.category == "not_validated";
                 bool isNew = !_pending.ContainsKey(a.tracking_id);
 
                 if (isSilent)
                 {
-                    // Alertes silencieuses : ajoutées dans le panneau et le
-                    // compteur de la bulle, mais sans jamais déclencher de popup.
                     if (isNew)
                     {
                         _pending[a.tracking_id] = a;
                         _reminderStatus[a.tracking_id] = a.reminder_done;
-                        _minimizedSet.Add(a.tracking_id); // force le mode "bulle" dès le départ
+                        _minimizedSet.Add(a.tracking_id);
                         centerNeedsRefresh = true;
-                        Refresh(); // met à jour le compteur de la bulle
+                        Refresh();
                     }
                     else
                     {
@@ -76,7 +90,7 @@ namespace MailDetectorAgent
                         }
                     }
                 }
-                else // "pending" : flux normal avec popup
+                else // "pending"
                 {
                     if (isNew)
                     {
@@ -94,14 +108,28 @@ namespace MailDetectorAgent
                         {
                             _reminderStatus[a.tracking_id] = a.reminder_done;
                             centerNeedsRefresh = true;
+
+                            // Si c'est l'alerte affichée dans le popup simple,
+                            // on la met à jour en direct.
+                            if (_singleForm != null && !_singleForm.IsDisposed
+                                && _singleForm.TrackingId == a.tracking_id
+                                && a.reminder_done.HasValue)
+                            {
+                                _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
+                            }
                         }
                     }
                 }
             }
 
+            if (anyGone)
+                Refresh(); // recalcule badge / popup simple / panneau selon le nouveau _pending.Count
+
             if (centerNeedsRefresh)
                 _centerForm?.RefreshList(_pending.Values.ToList());
         }
+
+
 
         public static void Dismiss(string trackingId)
         {
