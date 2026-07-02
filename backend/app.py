@@ -299,7 +299,16 @@ def get_history():
                   subject, ai_summary, sent_at, opened_at,
                   alert_acked, reminder_done, reminder_answered_at
            FROM email_log
-           ORDER BY sent_at DESC"""
+           ORDER BY
+              CASE
+                WHEN reminder_done = FALSE                              THEN 1
+                WHEN reminder_done IS NULL AND alert_acked = FALSE      THEN 2
+                WHEN reminder_done IS NULL AND alert_acked = TRUE       THEN 3
+                WHEN opened_at IS NOT NULL AND reminder_done IS NULL    THEN 4
+                WHEN reminder_done = TRUE                               THEN 5
+                ELSE 6
+              END ASC,
+              sent_at DESC"""
     )
     rows = cur.fetchall()
     cur.close()
@@ -379,7 +388,17 @@ def mail_detail_page(tracking_id: str):
         """SELECT tracking_id, sender_email, recipient_email, cc_email,
                   subject, ai_summary, sent_at, opened_at,
                   alert_acked, reminder_done
-           FROM email_log ORDER BY sent_at DESC"""
+           FROM email_log 
+           ORDER BY
+              CASE
+                WHEN reminder_done = FALSE                              THEN 1
+                WHEN reminder_done IS NULL AND alert_acked = FALSE      THEN 2
+                WHEN reminder_done IS NULL AND alert_acked = TRUE       THEN 3
+                WHEN opened_at IS NOT NULL AND reminder_done IS NULL    THEN 4
+                WHEN reminder_done = TRUE                               THEN 5
+                ELSE 6
+              END ASC,
+              sent_at DESC"""
     )
     history = cur.fetchall()
     cur.close()
