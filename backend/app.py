@@ -89,18 +89,21 @@ def track(tracking_id: str):
 
 @app.get("/api/alerts")
 def get_alerts():
-    """Retourne 3 catégories d'alertes :
-    - 'pending'        : en attente (alert_acked=FALSE)
-    - 'seen_no_answer' : vu sans réponse au rappel (alert_acked=TRUE, reminder_done=NULL)
-    - 'not_validated'  : rappel non effectué (reminder_done=FALSE)
-    Réinitialise aussi les re-checks échus."""
+    """Retourne uniquement les mails en attente sans statut de rappel.
+    Quand le délai de re-check est écoulé, remet le mail entièrement à
+    zéro (reminder_done=NULL, alert_acked=FALSE) pour qu'il réapparaisse
+    comme un nouveau popup sans statut."""
     conn = get_conn()
     cur = conn.cursor()
 
-    # Réinitialise les alertes dont le délai de re-check est écoulé.
+    # Remet à zéro les mails dont le délai de re-check est écoulé.
+    # reminder_done repasse à NULL → le prochain poll le traite comme
+    # un mail sans réponse, ce qui déclenche un nouveau popup.
     cur.execute(
         """UPDATE email_log
            SET alert_acked = FALSE,
+               reminder_done = NULL,
+               reminder_answered_at = NULL,
                reminder_recheck_at = NULL
            WHERE reminder_done = FALSE
            AND reminder_recheck_at IS NOT NULL
@@ -108,8 +111,22 @@ def get_alerts():
     )
     conn.commit()
 
-    def make_row(r, category):
-        return {
+    # Seuls les mails actifs sans statut apparaissent dans la barre.
+    # Catégorie 1 : en attente (déclenche les popups)
+    # reminder_done IS NULL garantit que si l'utilisateur a répondu depuis la
+    # page web, l'alerte n'apparaît plus ici — même si alert_acked est encore FALSE.
+    cur.execute(
+        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
+                  sent_at, reminder_done
+           FROM email_log
+           WHERE opened_at IS NULL
+           AND alert_acked = FALSE
+           AND reminder_done IS NULL
+           AND sent_at < NOW() - (%s * INTERVAL '1 minute')""",
+        (THRESHOLD_MINUTES,),
+    )
+    results = [
+        {
             "tracking_id": str(r[0]),
             "sender": r[1],
             "recipient": r[2],
@@ -118,25 +135,15 @@ def get_alerts():
             "summary": r[5] or "",
             "sent_at": str(r[6]),
             "reminder_done": r[7],
-            "category": category,
+            "category": "pending",
         }
+        for r in cur.fetchall()
+    ]
 
-    results = []
-
-    # 1. En attente (déclenche les popups)
-    cur.execute(
-        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
-                  sent_at, reminder_done
-           FROM email_log
-           WHERE opened_at IS NULL
-           AND alert_acked = FALSE
-           AND sent_at < NOW() - (%s * INTERVAL '1 minute')""",
-        (THRESHOLD_MINUTES,),
-    )
-    for r in cur.fetchall():
-        results.append(make_row(r, "pending"))
-
-    # 2. Vu sans réponse au rappel (silencieux — juste dans le panneau)
+    # Catégorie 2 : vu sans réponse au rappel (silencieux dans le panneau)
+    # La catégorie "not_validated" (reminder_done=FALSE, recheck en attente)
+    # n'est pas renvoyée : ces mails disparaissent du panneau jusqu'à ce que
+    # le recheck les réinitialise en "pending" avec reminder_done=NULL.
     cur.execute(
         """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
                   sent_at, reminder_done
@@ -146,18 +153,17 @@ def get_alerts():
            AND opened_at IS NULL""",
     )
     for r in cur.fetchall():
-        results.append(make_row(r, "seen_no_answer"))
-
-    # 3. Non validé après rappel (silencieux — juste dans le panneau)
-    cur.execute(
-        """SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
-                  sent_at, reminder_done
-           FROM email_log
-           WHERE reminder_done = FALSE
-           AND reminder_recheck_at IS NOT NULL""",
-    )
-    for r in cur.fetchall():
-        results.append(make_row(r, "not_validated"))
+        results.append({
+            "tracking_id": str(r[0]),
+            "sender": r[1],
+            "recipient": r[2],
+            "cc": r[3] or "",
+            "subject": r[4] or "",
+            "summary": r[5] or "",
+            "sent_at": str(r[6]),
+            "reminder_done": r[7],
+            "category": "seen_no_answer",
+        })
 
     cur.close()
     conn.close()
@@ -338,6 +344,7 @@ def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> st
             f'<span>✓</span> J\'ai finalement fait le rappel'
             f'</button>'
             f'</div>'
+            f'<div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>'
             f'</div>'
         )
     return (
@@ -741,6 +748,7 @@ def mail_detail_page(tracking_id: str):
                   <span>✓</span> J'ai finalement fait le rappel
                 </button>
               </div>
+              <div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>
             </div>`;
         }} else {{
           section.innerHTML = `
@@ -761,8 +769,6 @@ def mail_detail_page(tracking_id: str):
   }}, 3000);
 }})();
 // Polling du tableau d'historique : recharge /api/history toutes les 3s
-// et reconstruit les lignes, pour refléter en temps réel les changements
-// faits depuis n'importe quelle autre page (ou l'agent C#).
 (function startHistoryPolling() {{
   const currentTid = '{str(tracking_id)}';
 
@@ -790,14 +796,11 @@ def mail_detail_page(tracking_id: str):
       const resp = await fetch('/api/history');
       if (!resp.ok) return;
       const rows = await resp.json();
-
       const tbody = document.getElementById('history-tbody');
       if (!tbody) return;
-
       tbody.innerHTML = rows.map(h => {{
         const isCurrent = h.tracking_id === currentTid ? 'row-current' : '';
-        return `
-        <tr class="${{isCurrent}}" onclick="window.location='/mail/${{h.tracking_id}}'">
+        return `<tr class="${{isCurrent}}" onclick="window.location='/mail/${{h.tracking_id}}'">
             <td class="td-subject">${{escapeHtml(h.subject)}}</td>
             <td>${{escapeHtml(h.sender)}}</td>
             <td>${{escapeHtml(h.recipient)}}</td>
@@ -805,7 +808,7 @@ def mail_detail_page(tracking_id: str):
             <td>${{statusBadge(h.opened_at, h.alert_acked, h.reminder_done)}}</td>
         </tr>`;
       }}).join('');
-    }} catch(e) {{ /* réseau indisponible — on réessaie au prochain tick */ }}
+    }} catch(e) {{}}
   }}
 
   setInterval(refreshHistory, 3000);
@@ -887,6 +890,7 @@ async function finallyDone(trackingId) {{
     section.style.pointerEvents = 'auto';
   }}
 }}
+setInterval(refreshHistory, 3000);
 </script>
 </head>
 <body>
