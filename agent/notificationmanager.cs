@@ -5,19 +5,11 @@ using System.Threading.Tasks;
 
 namespace MailDetectorAgent
 {
-    /// <summary>
-    /// Point central qui décide quoi afficher :
-    /// - 1 alerte en attente  -> un seul NotificationForm (popup classique)
-    /// - 2+ alertes en attente -> BadgeForm (bulle avec le nombre) qui ouvre
-    ///   NotificationCenterForm (panneau listant toutes les alertes)
-    /// L'ack (POST /api/alerts/{id}/ack) n'est envoyé que quand l'utilisateur
-    /// ferme réellement la notification (clic sur la croix ou sur le corps).
-    /// </summary>
     public static class NotificationManager
     {
         private static readonly Dictionary<string, AlertDto> _pending = new();
-        private static readonly Dictionary<string, bool?> _reminderStatus = new(); // cache local, source = backend
-        private static readonly HashSet<string> _minimizedSet = new(); // alertes "X" : en attente, popup masqué
+        private static readonly Dictionary<string, bool?> _reminderStatus = new();
+        private static readonly HashSet<string> _minimizedSet = new();
         private static NotificationForm? _singleForm;
         private static BadgeForm? _badgeForm;
         private static NotificationCenterForm? _centerForm;
@@ -36,21 +28,17 @@ namespace MailDetectorAgent
         public static void SetReminderStatus(string trackingId, bool done)
         {
             _reminderStatus[trackingId] = done;
-            _ = _reminderCallback?.Invoke(trackingId, done); // persisté en base côté backend
-            // La suppression effective (ack + retrait de l'UI) est désormais
-            // déclenchée par le composant UI lui-même (popup ou carte), après
-            // un court message de confirmation, via le même Dismiss() que
-            // pour la croix — pour les deux réponses Oui et Non.
+            _ = _reminderCallback?.Invoke(trackingId, done);
         }
+
         public static async Task AddAlertsAsync(IEnumerable<AlertDto> alerts)
         {
             var alertList = alerts.ToList();
             var currentIds = new HashSet<string>(alertList.Select(a => a.tracking_id));
             bool centerNeedsRefresh = false;
 
-            // Purge des alertes qui ont disparu du dernier poll (ex : résolues
-            // depuis la page web -> ne matchent plus aucune des 3 requêtes SQL
-            // côté backend -> /api/alerts ne les renvoie plus).
+            // Purge : retire de la barre tout ce que le backend ne renvoie plus
+            // (répondu "Oui" ou "Non" depuis la page web → disparu de /api/alerts).
             var goneIds = _pending.Keys.Where(id => !currentIds.Contains(id)).ToList();
             bool anyGone = goneIds.Count > 0;
             foreach (var id in goneIds)
@@ -58,95 +46,72 @@ namespace MailDetectorAgent
                 _pending.Remove(id);
                 _reminderStatus.Remove(id);
                 _minimizedSet.Remove(id);
-
                 if (_singleForm != null && !_singleForm.IsDisposed && _singleForm.TrackingId == id)
                     _singleForm.Close();
             }
 
+            // Tous les items sont désormais "pending" (catégorie unique).
             foreach (var a in alertList)
             {
-                bool isSilent = a.category == "seen_no_answer" || a.category == "not_validated";
                 bool isNew = !_pending.ContainsKey(a.tracking_id);
 
-                if (isSilent)
+                if (isNew)
                 {
-                    if (isNew)
+                    _pending[a.tracking_id] = a;
+                    _reminderStatus[a.tracking_id] = a.reminder_done;
+                    if (a.category == "seen_no_answer" || a.category == "not_validated")
+                        _minimizedSet.Add(a.tracking_id); // silencieux dès l'arrivée
+                    Refresh();
+                    if (a.category == "pending") await Task.Delay(600);
+                }
+                else
+                {
+                    var prevCategory = _pending[a.tracking_id].category;
+                    bool categoryChanged = prevCategory != a.category;
+                    bool reminderChanged = !Equals(
+                        _reminderStatus.GetValueOrDefault(a.tracking_id),
+                        a.reminder_done);
+
+                    if (categoryChanged || reminderChanged)
                     {
                         _pending[a.tracking_id] = a;
                         _reminderStatus[a.tracking_id] = a.reminder_done;
-                        _minimizedSet.Add(a.tracking_id);
+
+                        // Cas recheck : l'alerte revient en "pending" avec
+                        // reminder_done=NULL après avoir été "not_validated".
+                        // On la retire de _minimizedSet pour qu'un nouveau popup
+                        // s'affiche (pas juste la bulle silencieuse).
+                        if (a.category == "pending" && prevCategory != "pending")
+                        {
+                            _minimizedSet.Remove(a.tracking_id);
+                        }
+
                         centerNeedsRefresh = true;
                         Refresh();
-                    }
-                    else
-                    {
-                        bool changed = !Equals(
-                            _reminderStatus.GetValueOrDefault(a.tracking_id),
-                            a.reminder_done);
-                        if (changed)
-                        {
-                            _reminderStatus[a.tracking_id] = a.reminder_done;
-                            centerNeedsRefresh = true;
-                        }
-                    }
-                }
-                else // "pending"
-                {
-                    if (isNew)
-                    {
-                        _pending[a.tracking_id] = a;
-                        _reminderStatus[a.tracking_id] = a.reminder_done;
-                        Refresh();
-                        await Task.Delay(600);
-                    }
-                    else
-                    {
-                        bool changed = !Equals(
-                            _reminderStatus.GetValueOrDefault(a.tracking_id),
-                            a.reminder_done);
-                        if (changed)
-                        {
-                            _reminderStatus[a.tracking_id] = a.reminder_done;
-                            centerNeedsRefresh = true;
 
-                            // Si c'est l'alerte affichée dans le popup simple,
-                            // on la met à jour en direct.
-                            if (_singleForm != null && !_singleForm.IsDisposed
-                                && _singleForm.TrackingId == a.tracking_id
-                                && a.reminder_done.HasValue)
-                            {
-                                _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
-                            }
+                        if (_singleForm != null && !_singleForm.IsDisposed
+                            && _singleForm.TrackingId == a.tracking_id
+                            && a.reminder_done.HasValue)
+                        {
+                            _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
                         }
                     }
                 }
             }
 
-            if (anyGone)
-                Refresh(); // recalcule badge / popup simple / panneau selon le nouveau _pending.Count
-
-            if (centerNeedsRefresh)
-                _centerForm?.RefreshList(_pending.Values.ToList());
+            if (anyGone) Refresh();
+            if (centerNeedsRefresh) _centerForm?.RefreshList(_pending.Values.ToList());
         }
-
-
 
         public static void Dismiss(string trackingId)
         {
             if (_pending.Remove(trackingId))
-            {
                 _ = _ackCallback?.Invoke(trackingId);
-            }
             _reminderStatus.Remove(trackingId);
             _minimizedSet.Remove(trackingId);
             Refresh();
         }
 
-        /// <summary>
-        /// Appelé quand l'utilisateur clique sur la croix (ou le corps) du
-        /// popup unique : le mail reste en attente (pas d'ack, pas de
-        /// changement en base), seul l'affichage bascule sur la bulle.
-        /// </summary>
         public static void MinimizeSingle(string trackingId)
         {
             _minimizedSet.Add(trackingId);
@@ -172,8 +137,6 @@ namespace MailDetectorAgent
 
                 if (_minimizedSet.Contains(alert.tracking_id))
                 {
-                    // L'utilisateur a fermé (X) l'unique popup -> on affiche
-                    // seulement la bulle, le mail reste en attente.
                     CloseSingle();
                     ShowOrUpdateBadge(count);
                     _centerForm?.RefreshList(_pending.Values.ToList());
@@ -186,8 +149,8 @@ namespace MailDetectorAgent
                 {
                     _singleForm = new NotificationForm(
                         alert,
-                        () => Dismiss(alert.tracking_id),            // utilisé après confirmation Oui/Non
-                        () => MinimizeSingle(alert.tracking_id),     // utilisé par la croix / le corps
+                        () => Dismiss(alert.tracking_id),
+                        () => MinimizeSingle(alert.tracking_id),
                         GetReminderStatus(alert.tracking_id),
                         done => SetReminderStatus(alert.tracking_id, done));
                     _singleForm.Show();
@@ -195,7 +158,6 @@ namespace MailDetectorAgent
                 return;
             }
 
-            // count > 1 : on bascule sur la bulle + le panneau, plus de popup individuel
             CloseSingle();
             ShowOrUpdateBadge(count);
             _centerForm?.RefreshList(_pending.Values.ToList());
@@ -216,9 +178,6 @@ namespace MailDetectorAgent
 
         private static void OnBadgeClicked()
         {
-            // Toujours ouvrir le panneau complet, même pour une seule alerte
-            // minimisée (décision explicite : pas de réouverture directe du
-            // popup individuel depuis la bulle).
             if (_centerForm == null || _centerForm.IsDisposed)
             {
                 _centerForm = new NotificationCenterForm(
