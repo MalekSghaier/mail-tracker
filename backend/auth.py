@@ -13,8 +13,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-# ---------- mots de passe ----------
-
 def hash_password(plain_password: str) -> str:
     return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -25,8 +23,6 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     except (ValueError, TypeError):
         return False
 
-
-# ---------- JWT ----------
 
 def create_access_token(subject: str, role: str, extra: dict | None = None) -> str:
     """role = 'admin' ou 'user'"""
@@ -51,7 +47,6 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token invalide")
 
 
-# ---------- dependencies FastAPI ----------
 
 def _get_payload(creds: HTTPAuthorizationCredentials | None) -> dict:
     if creds is None or not creds.credentials:

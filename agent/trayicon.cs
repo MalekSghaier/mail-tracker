@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace MailDetectorAgent
@@ -57,7 +58,12 @@ namespace MailDetectorAgent
             if (savedToken != null)
             {
                 _poller.SetAuthToken(savedToken);
-                bool stillValid = _poller.VerifyTokenAsync().GetAwaiter().GetResult();
+
+                // Task.Run isole cet appel du thread UI courant : la tâche s'exécute
+                // sur un thread du pool, sans contexte de synchronisation WinForms
+                // à capturer. Combiné à ConfigureAwait(false) dans VerifyTokenAsync,
+                // ça élimine le risque de deadlock au démarrage (avant Application.Run).
+                bool stillValid = Task.Run(() => _poller.VerifyTokenAsync()).GetAwaiter().GetResult();
                 if (stillValid) return true;
 
                 // Token présent mais rejeté par le backend (expiré, ou
@@ -77,7 +83,12 @@ namespace MailDetectorAgent
             return false;
         }
 
-
+        /// <summary>
+        /// Appelé par le Poller quand le backend renvoie 401/403 en cours
+        /// de route. On masque tout de suite l'icône (donc plus aucun
+        /// nouveau popup/bulle ne peut se déclencher), puis on retente une
+        /// authentification.
+        /// </summary>
         private void OnSessionExpired()
         {
             _trayIcon.Visible = false;
