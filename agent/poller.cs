@@ -1,5 +1,6 @@
 using System;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -11,6 +12,14 @@ namespace MailDetectorAgent
         private readonly HttpClient _http = new();
         private readonly string _apiBase;
         private System.Windows.Forms.Timer? _timer;
+
+        /// <summary>Déclenché quand le backend répond 401/403 : la session
+        /// n'est plus valide (expirée ou compte désactivé). L'appelant doit
+        /// ré-afficher le login et ne rien afficher tant que ce n'est pas fait.</summary>
+        public event Action? SessionExpired;
+
+        public string ApiBase => _apiBase;
+        public HttpClient HttpClient => _http;
 
         public Poller(NotifyIcon trayIcon)
         {
@@ -44,6 +53,35 @@ namespace MailDetectorAgent
                 });
         }
 
+        /// <summary>Attache le token JWT à toutes les futures requêtes.</summary>
+        public void SetAuthToken(string token)
+        {
+            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+
+        public void ClearAuthToken()
+        {
+            _http.DefaultRequestHeaders.Authorization = null;
+        }
+
+        /// <summary>Vérifie que le token actuellement attaché est valide,
+        /// sans déclencher SessionExpired (utilisé au démarrage, en silence).</summary>
+        public async Task<bool> VerifyTokenAsync()
+        {
+            if (_http.DefaultRequestHeaders.Authorization == null) return false;
+            try
+            {
+                var resp = await _http.GetAsync($"{_apiBase}/api/auth/verify");
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                // Backend injoignable : on ne peut pas confirmer, on considère invalide
+                // par prudence pour ne jamais afficher de popup sans certitude.
+                return false;
+            }
+        }
+
         public void Start()
         {
             _timer = new System.Windows.Forms.Timer { Interval = 3_000 }; // 3 sec
@@ -61,7 +99,24 @@ namespace MailDetectorAgent
             _busy = true;
             try
             {
-                var json = await _http.GetStringAsync($"{_apiBase}/api/alerts");
+                var resp = await _http.GetAsync($"{_apiBase}/api/alerts");
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                    || resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    // Session invalide (expirée ou compte désactivé) : on arrête
+                    // tout de suite le polling pour ne rien afficher, et on
+                    // prévient l'appelant pour qu'il relance le login.
+                    Stop();
+                    ClearAuthToken();
+                    TokenStorage.Clear();
+                    SessionExpired?.Invoke();
+                    return;
+                }
+
+                if (!resp.IsSuccessStatusCode) return;
+
+                var json = await resp.Content.ReadAsStringAsync();
                 var alerts = JsonSerializer.Deserialize<AlertDto[]>(
                     json,
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
