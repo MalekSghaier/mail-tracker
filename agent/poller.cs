@@ -13,9 +13,6 @@ namespace MailDetectorAgent
         private readonly string _apiBase;
         private System.Windows.Forms.Timer? _timer;
 
-        /// <summary>Déclenché quand le backend répond 401/403 : la session
-        /// n'est plus valide (expirée ou compte désactivé). L'appelant doit
-        /// ré-afficher le login et ne rien afficher tant que ce n'est pas fait.</summary>
         public event Action? SessionExpired;
 
         public string ApiBase => _apiBase;
@@ -63,17 +60,6 @@ namespace MailDetectorAgent
         {
             _http.DefaultRequestHeaders.Authorization = null;
         }
-
-        /// <summary>Vérifie que le token actuellement attaché est valide,
-        /// sans déclencher SessionExpired (utilisé au démarrage, en silence).
-        /// ConfigureAwait(false) est essentiel ici : cette méthode est appelée
-        /// de façon synchrone (.GetAwaiter().GetResult()) AVANT qu'Application.Run()
-        /// ne démarre la boucle de messages Windows. Sans ConfigureAwait(false),
-        /// la suite de l'exécution après le "await" tenterait de revenir sur le
-        /// thread UI via son contexte de synchronisation — thread qui est lui-même
-        /// bloqué en train d'attendre ce résultat, et où aucune boucle de messages
-        /// ne tourne encore pour débloquer la reprise. Résultat : deadlock silencieux,
-        /// l'agent ne montre jamais ni icône ni popup après un 2e lancement.</summary>
         public async Task<bool> VerifyTokenAsync()
         {
             if (_http.DefaultRequestHeaders.Authorization == null) return false;
