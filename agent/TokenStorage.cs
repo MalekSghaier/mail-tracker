@@ -38,7 +38,6 @@ namespace MailDetectorAgent
             }
             catch
             {
-                // Fichier corrompu ou illisible (ex: profil Windows différent) → on l'efface
                 Clear();
                 return null;
             }
