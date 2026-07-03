@@ -9,17 +9,21 @@ import html as html_module
 import os
 import uuid
 from datetime import datetime, timedelta
-
 import psycopg2
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-
 from ollama_client import generer_resume
+from fastapi import HTTPException, Depends
+from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
+from fastapi import Depends
+from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
+from admin_page import router as admin_router
 
 load_dotenv()
 app = FastAPI(title="Mail Detector POC")
+app.include_router(admin_router)
 
 THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
 RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
@@ -88,7 +92,7 @@ def track(tracking_id: str):
 
 
 @app.get("/api/alerts")
-def get_alerts():
+def get_alerts(user=Depends(get_current_user)):
     """Retourne uniquement les mails en attente sans statut de rappel.
     Quand le délai de re-check est écoulé, remet le mail entièrement à
     zéro (reminder_done=NULL, alert_acked=FALSE) pour qu'il réapparaisse
@@ -170,8 +174,16 @@ def get_alerts():
     return results
 
 
+@app.get("/api/auth/verify")
+def verify_token(user=Depends(get_current_user)):
+    """Endpoint léger utilisé par l'agent au démarrage pour vérifier
+    silencieusement si le token sauvegardé est encore valide."""
+    return {"ok": True, "sub": user.get("sub"), "role": user.get("role")}
+
+
+
 @app.post("/api/alerts/{tracking_id}/ack")
-def ack_alert(tracking_id: str):
+def ack_alert(tracking_id: str, user=Depends(get_current_user)):
     """Appelé par l'agent C#/.NET après affichage du popup."""
     conn = get_conn()
     cur = conn.cursor()
@@ -223,7 +235,7 @@ class TrackingIds(BaseModel):
 
 
 @app.post("/api/alerts/states")
-def get_states(payload: TrackingIds):
+def get_states(payload: TrackingIds, user=Depends(get_current_user)):
     """Retourne l'état actuel (alert_acked, reminder_done) pour une liste
     de tracking_ids — y compris ceux déjà ackés. Utilisé par l'agent pour
     synchroniser son état local avec la base en temps quasi-réel."""
@@ -330,6 +342,147 @@ def get_history():
         for r in rows
     ]
 
+class AdminLogin(BaseModel):
+    username: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    email: str | None = None
+
+
+@app.post("/api/admin/login")
+def admin_login(payload: AdminLogin):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, password_hash FROM admins WHERE username = %s", (payload.username,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row or not verify_password(payload.password, row[1]):
+        raise HTTPException(status_code=401, detail="Identifiants invalides")
+    token = create_access_token(subject=payload.username, role="admin", extra={"admin_id": row[0]})
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/api/admin/users")
+def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM app_users WHERE username = %s", (payload.username,))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        raise HTTPException(status_code=409, detail="Ce nom d'utilisateur existe déjà")
+    cur.execute(
+        """INSERT INTO app_users (username, email, password_hash, created_by_admin_id)
+           VALUES (%s, %s, %s, %s) RETURNING id""",
+        (payload.username, payload.email, hash_password(payload.password), admin["admin_id"]),
+    )
+    user_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"id": user_id, "username": payload.username}
+
+
+@app.get("/api/admin/users")
+def list_users(admin=Depends(get_current_admin)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, email, is_active, created_at FROM app_users ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {"id": r[0], "username": r[1], "email": r[2], "is_active": r[3], "created_at": str(r[4])}
+        for r in rows
+    ]
+
+
+@app.delete("/api/admin/users/{user_id}")
+def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE app_users SET is_active = FALSE WHERE id = %s", (user_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True}
+
+@app.post("/api/admin/users/{user_id}/activate")
+def activate_user(user_id: int, admin=Depends(get_current_admin)):
+    """Réactive un utilisateur précédemment désactivé."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE app_users SET is_active = TRUE WHERE id = %s", (user_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/admin/stats")
+def get_admin_stats(admin=Depends(get_current_admin)):
+    """Statistiques affichées en haut du tableau de bord admin."""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active), "
+        "COUNT(*) FILTER (WHERE NOT is_active) FROM app_users"
+    )
+    total_users, active_users, inactive_users = cur.fetchone()
+
+    cur.execute("SELECT COUNT(*) FROM email_log")
+    total_emails = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM email_log WHERE opened_at IS NOT NULL")
+    opened_emails = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM email_log WHERE reminder_done = TRUE")
+    reminder_done = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM email_log WHERE reminder_done = FALSE")
+    reminder_not_done = cur.fetchone()[0]
+
+    cur.close()
+    conn.close()
+    return {
+        "users": {"total": total_users, "active": active_users, "inactive": inactive_users},
+        "emails": {
+            "total": total_emails,
+            "opened": opened_emails,
+            "reminder_done": reminder_done,
+            "reminder_not_done": reminder_not_done,
+        },
+    }
+
+
+@app.post("/api/auth/login")
+def user_login(payload: UserLogin):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, password_hash, is_active FROM app_users WHERE username = %s",
+        (payload.username,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row or not verify_password(payload.password, row[1]):
+        raise HTTPException(status_code=401, detail="Identifiants invalides")
+    if not row[2]:
+        raise HTTPException(status_code=403, detail="Compte désactivé")
+    token = create_access_token(subject=payload.username, role="user", extra={"user_id": row[0]})
+    return {"access_token": token, "token_type": "bearer"}
 
 def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
     """Génère le bloc HTML du rappel selon l'état actuel."""
