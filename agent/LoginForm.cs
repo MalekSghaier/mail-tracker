@@ -55,17 +55,8 @@ namespace MailDetectorAgent
             BackColor = BgColor;
             ShowInTaskbar = true;
             Text = "Mail Detector — Connexion"; // texte affiché au survol dans la barre des tâches
+            Icon = IconHelper.GetTrayIcon();
 
-            // Logo affiché dans la barre des tâches Windows (même fichier que
-            // l'icône du tray dans TrayIconApp.cs). Adapte le chemin si besoin.
-            try
-            {
-                Icon = new Icon(@"C:\Users\DELL\Desktop\mail-tracker\agent\Assets\favicon.ico");
-            }
-            catch
-            {
-                // fichier introuvable : Windows utilisera l'icône par défaut, sans planter
-            }
 
             ApplyRoundedRegion();
 
@@ -93,18 +84,18 @@ namespace MailDetectorAgent
 
                 // Essaie d'afficher le vrai logo ; retombe sur l'emoji enveloppe
                 // si le fichier est introuvable (POC sur un autre PC, par ex.).
-                try
+                using var logoImg = IconHelper.GetLogoImage();
+                if (logoImg != null)
                 {
-                    using var logoImg = Image.FromFile(@"C:\Users\DELL\Desktop\mail-tracker\agent\Assets\favicon.ico");
                     var inset = new Rectangle(5, 5, 21, 21);
                     e.Graphics.SetClip(path);
                     e.Graphics.DrawImage(logoImg, inset);
                     e.Graphics.ResetClip();
                 }
-                catch
+                else
                 {
                     TextRenderer.DrawText(e.Graphics, "✉", new Font("Segoe UI Emoji", 12f),
-                        rect, Color.FromArgb(255, 24, 20, 12), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                      rect, Color.FromArgb(255, 24, 20, 12), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
             };
 
@@ -167,11 +158,9 @@ namespace MailDetectorAgent
             var userLabel = MakeFieldLabel("Nom d'utilisateur", 168);
             _usernameBox = new TextBox();
             var userWrapper = WrapInput(_usernameBox, 190);
-
             var passLabel = MakeFieldLabel("Mot de passe", 246);
             _passwordBox = new TextBox { UseSystemPasswordChar = true };
             var passWrapper = WrapInput(_passwordBox, 268);
-
             _usernameBox.KeyDown += (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter)

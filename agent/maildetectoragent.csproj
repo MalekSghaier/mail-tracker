@@ -9,4 +9,10 @@
     <AssemblyName>MailDetectorAgent</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <None Include="Assets\favicon.ico">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
