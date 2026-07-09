@@ -68,7 +68,7 @@ def admin_page():
   .header-title { font-size: 15px; font-weight: 600; }
   .header-sub { font-size: 12px; color: var(--meta); margin-left: auto; }
 
-  .container { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 48px 24px 80px; }
 
   /* ---------------- LOGIN ---------------- */
   #login-view {
@@ -239,27 +239,61 @@ def admin_page():
     border-color: var(--gold-dim);
     box-shadow: 0 0 0 3px rgba(212,175,90,.15);
   }
+  .form-row select {
+    width: 100%;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 13px;
+    color: var(--text);
+    font-size: 13.5px;
+    font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+    cursor: pointer;
+  }
+  .form-row select:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 0 3px rgba(212,175,90,.15);
+  }
   #add-user-btn { padding: 10px 24px; white-space: nowrap; }
   .msg-ok, .msg-err { font-size: 12.5px; margin-top: 12px; display: none; }
   .msg-ok { color: var(--green); }
   .msg-err { color: var(--red); }
 
   /* ---- table ---- */
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
   thead th {
     text-align: left; padding: 12px 16px;
     font-size: 10px; font-weight: 700; letter-spacing: .1em;
     text-transform: uppercase; color: var(--meta);
     border-bottom: 1px solid var(--border);
+    white-space: nowrap;
   }
   tbody tr { border-bottom: 1px solid var(--border); transition: opacity .2s; }
   tbody tr:last-child { border-bottom: none; }
   tbody tr.row-inactive { opacity: .45; }
   tbody tr.row-inactive .username-cell { text-decoration: line-through; text-decoration-color: var(--meta); }
-  td { padding: 13px 16px; vertical-align: middle; }
+  td { padding: 13px 16px; vertical-align: middle; white-space: nowrap; }
   .username-cell { font-weight: 600; }
   .badge-active { color: var(--green); font-size: 12px; font-weight: 600; white-space: nowrap; }
   .badge-inactive { color: var(--meta); font-size: 12px; white-space: nowrap; }
+  .role-badge {
+    display: inline-block; padding: 3px 9px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; white-space: nowrap;
+  }
+  .role-employee { background: rgba(136,136,160,.12); color: var(--meta); }
+  .role-dept_admin { background: rgba(90,156,240,.14); color: var(--blue); }
+  .role-superadmin { background: rgba(212,175,90,.16); color: var(--gold); }
+  .btn-edit {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    font-size: 12px;
+    margin-right: 8px;
+  }
 
   .logout-link {
     font-size: 12px; color: var(--meta); cursor: pointer;
@@ -379,6 +413,18 @@ def admin_page():
           <label>Mot de passe</label>
           <input id="new-password" type="password">
         </div>
+        <div>
+          <label>Département</label>
+          <input id="new-department" type="text" placeholder="ex: IT, RH, Finance">
+        </div>
+        <div>
+          <label>Rôle</label>
+          <select id="new-role">
+            <option value="employee">Employé</option>
+            <option value="dept_admin">Chef de département</option>
+            <option value="superadmin">Super admin (voit tout)</option>
+          </select>
+        </div>
         <button class="btn btn-primary" id="add-user-btn" onclick="addUser()">
           <span class="btn-label">Ajouter</span>
           <span class="spinner"></span>
@@ -392,13 +438,15 @@ def admin_page():
       Utilisateurs abonnés
       <span class="logout-link" onclick="logout()">Se déconnecter</span>
     </div>
-    <div class="card" style="padding:0;">
-      <table>
-        <thead>
-          <tr><th>Nom d'utilisateur</th><th>Email</th><th>Statut</th><th>Créé le</th><th></th></tr>
-        </thead>
-        <tbody id="users-tbody"></tbody>
-      </table>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Nom d'utilisateur</th><th>Email</th><th>Département</th><th>Rôle</th><th>Statut</th><th>Créé le</th><th></th></tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
       <div class="empty-state" id="empty-state" style="display:none;">Aucun utilisateur pour l'instant.</div>
     </div>
   </div>
@@ -414,6 +462,31 @@ def admin_page():
     <div class="modal-actions">
       <button class="btn btn-ghost" id="confirm-cancel">Annuler</button>
       <button class="btn btn-danger-solid" id="confirm-ok">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODALE D'ÉDITION RÔLE / DÉPARTEMENT -->
+<div class="modal-overlay" id="edit-overlay">
+  <div class="modal-card">
+    <div class="modal-icon" style="background:rgba(212,175,90,.12);border-color:rgba(212,175,90,.25);color:var(--gold);">✎</div>
+    <div class="modal-title">Modifier le rôle</div>
+    <div class="modal-message" id="edit-username-label"></div>
+    <div class="field">
+      <label>Département</label>
+      <input id="edit-department" type="text" placeholder="ex: IT, RH, Finance">
+    </div>
+    <div class="field" style="margin-bottom:8px;">
+      <label>Rôle</label>
+      <select id="edit-role" style="width:100%;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;padding:11px 14px;color:var(--text);font-size:14px;font-family:inherit;">
+        <option value="employee">Employé</option>
+        <option value="dept_admin">Chef de département</option>
+        <option value="superadmin">Super admin (voit tout)</option>
+      </select>
+    </div>
+    <div class="modal-actions" style="margin-top:20px;">
+      <button class="btn btn-ghost" id="edit-cancel">Annuler</button>
+      <button class="btn btn-primary" id="edit-save" style="flex:1;">Enregistrer</button>
     </div>
   </div>
 </div>
@@ -526,6 +599,12 @@ async function loadStats() {
   } catch (e) { /* géré par authFetch */ }
 }
 
+const ROLE_LABELS = {
+  employee: 'Employé',
+  dept_admin: 'Chef de département',
+  superadmin: 'Super admin',
+};
+
 async function loadUsers() {
   try {
     const resp = await authFetch('/api/admin/users');
@@ -544,20 +623,62 @@ async function loadUsers() {
       <tr class="${u.is_active ? '' : 'row-inactive'}">
         <td class="username-cell">${escapeHtml(u.username)}</td>
         <td>${escapeHtml(u.email || '—')}</td>
+        <td>${escapeHtml(u.department || '—')}</td>
+        <td><span class="role-badge role-${u.account_role}">${ROLE_LABELS[u.account_role] || u.account_role}</span></td>
         <td>${u.is_active ? '<span class="badge-active">● Actif</span>' : '<span class="badge-inactive">● Désactivé</span>'}</td>
         <td>${String(u.created_at).slice(0,16).replace('T',' ')}</td>
-        <td>${u.is_active
-            ? `<button class="btn btn-danger" onclick="deactivateUser(${u.id})">Désactiver</button>`
-            : `<button class="btn btn-success" onclick="activateUser(${u.id})">Réactiver</button>`}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit" onclick='openEditRole(${JSON.stringify(u)})'>Modifier</button>
+          ${u.is_active
+              ? `<button class="btn btn-danger" onclick="deactivateUser(${u.id})">Désactiver</button>`
+              : `<button class="btn btn-success" onclick="activateUser(${u.id})">Réactiver</button>`}
+        </td>
       </tr>
     `).join('');
   } catch (e) { /* déjà géré par authFetch */ }
 }
 
+let editingUserId = null;
+
+function openEditRole(user) {
+  editingUserId = user.id;
+  document.getElementById('edit-username-label').textContent = `Utilisateur : ${user.username}`;
+  document.getElementById('edit-department').value = user.department || '';
+  document.getElementById('edit-role').value = user.account_role || 'employee';
+  document.getElementById('edit-overlay').classList.add('visible');
+}
+
+function closeEditRole() {
+  document.getElementById('edit-overlay').classList.remove('visible');
+  editingUserId = null;
+}
+
+document.getElementById('edit-cancel').addEventListener('click', closeEditRole);
+document.getElementById('edit-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'edit-overlay') closeEditRole();
+});
+
+document.getElementById('edit-save').addEventListener('click', async () => {
+  if (!editingUserId) return;
+  const department = document.getElementById('edit-department').value.trim();
+  const account_role = document.getElementById('edit-role').value;
+  try {
+    await authFetch(`/api/admin/users/${editingUserId}/role`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ department: department || null, account_role })
+    });
+    closeEditRole();
+    loadUsers();
+  } catch (e) {}
+});
+
 async function addUser() {
   const username = document.getElementById('new-username').value.trim();
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
+  const department = document.getElementById('new-department').value.trim();
+  const account_role = document.getElementById('new-role').value;
   const okEl = document.getElementById('add-ok');
   const errEl = document.getElementById('add-err');
   const btn = document.getElementById('add-user-btn');
@@ -575,13 +696,18 @@ async function addUser() {
     const resp = await authFetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, email: email || null, password })
+      body: JSON.stringify({
+        username, email: email || null, password,
+        department: department || null, account_role
+      })
     });
     if (resp.ok) {
       okEl.style.display = 'block';
       document.getElementById('new-username').value = '';
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
+      document.getElementById('new-department').value = '';
+      document.getElementById('new-role').value = 'employee';
       loadUsers();
       loadStats();
     } else {

@@ -8,7 +8,7 @@ namespace MailDetectorAgent
     /// <summary>
     /// Point d'entrée de l'agent. L'icône système et le polling ne
     /// démarrent QUE si l'utilisateur est authentifié comme abonné
-    /// (créé au préalable par un admin ARS via /admin). Sans session
+    /// (créé au préalable par un fadmin ARS via /admin). Sans session
     /// valide : aucune icône, aucun popup, aucune bulle.
     /// </summary>
     public sealed class TrayIconApp : IDisposable
@@ -20,8 +20,8 @@ namespace MailDetectorAgent
         {
             _trayIcon = new NotifyIcon
             {
-                Icon = new Icon(@"C:\Users\DELL\Desktop\mail-tracker\agent\Assets\favicon.ico"),
-                Visible = false, // caché tant que l'authentification n'est pas confirmée
+                Icon = IconHelper.GetTrayIcon(),
+                Visible = false, 
                 Text = "Mail Detector Agent",
             };
 
@@ -44,6 +44,7 @@ namespace MailDetectorAgent
 
             _trayIcon.Visible = true;
             _poller.Start();
+
         }
 
         /// <summary>
