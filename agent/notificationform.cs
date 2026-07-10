@@ -43,14 +43,14 @@ namespace MailDetectorAgent
         public string TrackingId { get; }
 
 
-        public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer)
+        public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer, string apiBase)
         {
             _slot = _openCount++;
             _reminderStatus = reminderStatus;
             _onAnswer = onAnswer;
             _onUserDismiss = onUserDismiss;
             _onMinimize = onMinimize;
-            _detailUrl = $"http://localhost:8000/mail/{alert.tracking_id}";
+            _detailUrl = $"{apiBase}/mail/{alert.tracking_id}";
             TrackingId = alert.tracking_id;
 
             bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);

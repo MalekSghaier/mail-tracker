@@ -15,11 +15,13 @@ namespace MailDetectorAgent
         private static NotificationCenterForm? _centerForm;
         private static Func<string, Task>? _ackCallback;
         private static Func<string, bool, Task>? _reminderCallback;
+        private static string _apiBase = "http://localhost:8000"; // valeur par défaut, peut être remplacée par Poller
 
-        public static void Configure(Func<string, Task> ackCallback, Func<string, bool, Task> reminderCallback)
+        public static void Configure(Func<string, Task> ackCallback, Func<string, bool, Task> reminderCallback,string apiBase)
         {
             _ackCallback = ackCallback;
             _reminderCallback = reminderCallback;
+            _apiBase = apiBase;
         }
 
         public static bool? GetReminderStatus(string trackingId) =>
@@ -152,7 +154,8 @@ namespace MailDetectorAgent
                         () => Dismiss(alert.tracking_id),
                         () => MinimizeSingle(alert.tracking_id),
                         GetReminderStatus(alert.tracking_id),
-                        done => SetReminderStatus(alert.tracking_id, done));
+                        done => SetReminderStatus(alert.tracking_id, done),
+                        _apiBase);
                     _singleForm.Show();
                 }
                 return;
@@ -184,7 +187,8 @@ namespace MailDetectorAgent
                     _pending.Values.ToList(),
                     Dismiss,
                     GetReminderStatus,
-                    SetReminderStatus);
+                    SetReminderStatus,
+                    _apiBase);
                 _centerForm.Show();
             }
             else

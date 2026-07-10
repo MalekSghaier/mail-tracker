@@ -20,7 +20,6 @@ namespace MailDetectorAgent
 
         public Poller(NotifyIcon trayIcon)
         {
-            // À adapter : l'IP/port de ton backend FastAPI (sur ton PC, donc localhost ici)
             _apiBase = Environment.GetEnvironmentVariable("MAIL_DETECTOR_API") ?? "http://localhost:8000";
 
             NotificationManager.Configure(
@@ -47,7 +46,8 @@ namespace MailDetectorAgent
                     {
                         Console.WriteLine($"[Poller] erreur reminder : {ex.Message}");
                     }
-                });
+                },
+                _apiBase);
         }
 
         /// <summary>Attache le token JWT à toutes les futures requêtes.</summary>

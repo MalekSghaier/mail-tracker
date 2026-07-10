@@ -10,7 +10,8 @@ from db import get_conn
 
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24))  # 24h
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 365 * 10))
+
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -66,9 +67,30 @@ def _get_payload(creds: HTTPAuthorizationCredentials | None) -> dict:
 
 
 def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
+    """Valide le token, puis relit systématiquement is_active en base
+    pour ce compte admin — même logique que get_current_user, pour que
+    la désactivation d'un admin soit effective immédiatement, pas
+    seulement après expiration du token."""
     payload = _get_payload(creds)
     if payload.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Accès admin requis")
+
+    admin_id = payload.get("admin_id")
+    if not admin_id:
+        raise HTTPException(status_code=401, detail="Token invalide")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT is_active FROM admins WHERE id = %s", (admin_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Compte introuvable")
+    if not row[0]:
+        raise HTTPException(status_code=403, detail="Compte désactivé")
+
     return payload
 
 
