@@ -32,16 +32,19 @@ namespace MailDetectorAgent
         private readonly Action<string> _onDismiss;
         private readonly Func<string, bool?> _getReminderStatus;
         private readonly Action<string, bool> _setReminderStatus;
+        private readonly string _apiBase;
 
         public NotificationCenterForm(
             List<AlertDto> alerts,
             Action<string> onDismiss,
             Func<string, bool?> getReminderStatus,
-            Action<string, bool> setReminderStatus)
+            Action<string, bool> setReminderStatus,
+            string apiBase)
         {
             _onDismiss = onDismiss;
             _getReminderStatus = getReminderStatus;
             _setReminderStatus = setReminderStatus;
+            _apiBase = apiBase; 
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -321,13 +324,13 @@ namespace MailDetectorAgent
             }
         }
 
-        private static void OpenDetailPage(string trackingId)
+        private void OpenDetailPage(string trackingId)
         {
             try
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = $"http://localhost:8000/mail/{trackingId}",
+                    FileName = $"{_apiBase}/mail/{trackingId}",
                     UseShellExecute = true,
                 });
             }

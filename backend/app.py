@@ -897,6 +897,8 @@ def mail_detail_page(tracking_id: str):
 <script>
 const tid = '{tracking_id}';
 let token = localStorage.getItem('user_token') || null;
+let mailLoadedOnce = false;
+let pollInterval = null;
 
 function escapeHtml(s) {{
   const div = document.createElement('div');
@@ -1037,17 +1039,39 @@ function renderMail(mail, history) {{
     </tr>`;
   }}).join('');
 }}
-
+function reconnectClick() {{
+  localStorage.removeItem('user_token');
+  location.reload();
+}}
 async function loadMail() {{
   try {{
     const resp = await authFetch(`/api/mail/${{tid}}`);
     document.getElementById('loading-view').style.display = 'none';
     if (!resp.ok) {{
-      document.getElementById('content-view').innerHTML = '<h1>Mail introuvable ou accès refusé</h1>';
-      document.getElementById('content-view').style.display = 'block';
-      document.getElementById('login-view').style.display = 'none';
+      if (mailLoadedOnce) {{
+        // Le mail était accessible avant, et ne l'est plus : ça veut dire
+        // que les droits de l'utilisateur ont changé entre-temps
+        // (département modifié, compte désactivé, etc.). On arrête le
+        // polling pour ne pas boucler sur une erreur, et on prévient
+        // clairement au lieu d'afficher un message brut.
+        if (pollInterval) clearInterval(pollInterval);
+        document.getElementById('content-view').innerHTML =
+          '<h1>Accès à ce mail révoqué</h1>' +
+          '<p style="color:var(--meta);margin-top:12px;">' +
+          'Vos droits ont changé (département ou compte modifié). ' +
+          'Reconnectez-vous pour voir vos mails actuels.</p>' +
+          '<button class="btn btn-primary" style="margin-top:20px;max-width:220px;" onclick="reconnectClick()">Se reconnecter</button>';
+        document.getElementById('content-view').style.display = 'block';
+        document.getElementById('login-view').style.display = 'none';
+      }} else {{
+        // Premier chargement et déjà en échec : cas normal (mauvais lien, etc.)
+        document.getElementById('content-view').innerHTML = '<h1>Mail introuvable ou accès refusé</h1>';
+        document.getElementById('content-view').style.display = 'block';
+        document.getElementById('login-view').style.display = 'none';
+      }}
       return;
     }}
+    mailLoadedOnce = true;
     const data = await resp.json();
     renderMail(data.mail, data.history);
     document.getElementById('login-view').style.display = 'none';
@@ -1092,7 +1116,7 @@ if (token) {{
   document.getElementById('login-view').style.display = 'block';
 }}
 
-setInterval(() => {{ if (token) loadMail(); }}, 3000);
+pollInterval = setInterval(() => {{ if (token) loadMail(); }}, 3000);
 </script>
 </body>
 </html>""")
