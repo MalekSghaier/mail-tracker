@@ -21,14 +21,28 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 from admin_page import router as admin_router
 from db import get_conn
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, build_alerts_filter
+from fastapi import Header
+from tasks import compute_summary_task
+
 
 load_dotenv()
+MILTER_SHARED_SECRET = os.getenv("MILTER_SHARED_SECRET")
 app = FastAPI(title="Mail Detector POC")
 app.include_router(admin_router)
 
 THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
 RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
 
+
+def verify_milter_secret(x_milter_secret: str = Header(None)):
+    """Vérifie le secret partagé envoyé par le milter Zimbra. Sans ce
+    secret (ou avec une valeur incorrecte), la requête est rejetée —
+    évite l'injection de faux mails par quiconque atteint le port 8000."""
+    if not MILTER_SHARED_SECRET:
+        # Mauvaise config serveur : mieux vaut bloquer que laisser ouvert.
+        raise HTTPException(status_code=500, detail="MILTER_SHARED_SECRET non configuré côté serveur")
+    if x_milter_secret != MILTER_SHARED_SECRET:
+        raise HTTPException(status_code=401, detail="Secret invalide")
 
 class EmailRegister(BaseModel):
     sender_email: str
@@ -44,12 +58,11 @@ def health():
 
 
 @app.post("/api/emails/register")
-def register_email(payload: EmailRegister):
-    """Appelé par le milter Zimbra à chaque mail sortant intercepté."""
+def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):
+    """Appelé par le milter Zimbra à chaque mail sortant intercepté.
+    Le résumé IA est calculé de façon asynchrone via Celery (voir H3) —
+    on répond au milter sans attendre Ollama."""
     tracking_id = str(uuid.uuid4())
-
-    # Résumé IA — synchrone pour ce POC (en prod finale : Celery, voir mail_detector.md)
-    ai_summary = generer_resume(payload.body)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -58,11 +71,14 @@ def register_email(payload: EmailRegister):
            (tracking_id, sender_email, recipient_email, cc_email, subject, body, ai_summary)
            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
         (tracking_id, payload.sender_email, payload.recipient_email, payload.cc_email,
-         payload.subject, payload.body, ai_summary),
+         payload.subject, payload.body, None),
     )
     conn.commit()
     cur.close()
     conn.close()
+
+    compute_summary_task.delay(tracking_id, payload.body)
+
     return {"tracking_id": tracking_id}
 
 
@@ -223,16 +239,22 @@ class TrackingIds(BaseModel):
 def get_states(payload: TrackingIds, user=Depends(get_current_user)):
     """Retourne l'état actuel (alert_acked, reminder_done) pour une liste
     de tracking_ids — y compris ceux déjà ackés. Utilisé par l'agent pour
-    synchroniser son état local avec la base en temps quasi-réel."""
+    synchroniser son état local avec la base en temps quasi-réel.
+    Filtré par périmètre de l'utilisateur connecté (voir build_alerts_filter),
+    exactement comme /api/alerts : un tracking_id hors périmètre est
+    simplement absent du résultat, sans erreur explicite (comportement
+    cohérent avec un GET par lot, pas un accès direct par id)."""
     if not payload.ids:
         return {}
     conn = get_conn()
     cur = conn.cursor()
+    filter_sql, filter_params = build_alerts_filter(user)
     cur.execute(
-        """SELECT tracking_id, alert_acked, reminder_done
+        f"""SELECT tracking_id, alert_acked, reminder_done
            FROM email_log
-           WHERE tracking_id = ANY(%s)""",
-        (payload.ids,),
+           WHERE tracking_id = ANY(%s::uuid[])
+           {filter_sql}""",
+        (payload.ids, *filter_params),
     )
     rows = cur.fetchall()
     cur.close()
@@ -241,7 +263,6 @@ def get_states(payload: TrackingIds, user=Depends(get_current_user)):
         str(r[0]): {"alert_acked": r[1], "reminder_done": r[2]}
         for r in rows
     }
-
 
 @app.get("/api/alerts/{tracking_id}/status")
 def get_alert_status(tracking_id: str, user=Depends(get_current_user)):

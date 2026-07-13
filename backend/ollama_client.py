@@ -65,8 +65,10 @@ def generer_resume(body_text: str) -> str:
                 "model": MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.1},  # moins de "créativité" = moins d'hallucination
+                "options": {"temperature": 0.1,"num_predict": 60,}, 
+                "keep_alive": "30m",
             },
+        
             timeout=90,
         )
         resp.raise_for_status()
