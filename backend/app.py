@@ -82,14 +82,22 @@ def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):
     return {"tracking_id": tracking_id}
 
 
+# Délai en dessous duquel un hit du pixel est considéré comme un scan
+# automatique (antivirus, filtre anti-spam, proxy de sécurité) et non
+PIXEL_ANTISCAN_DELAY_SECONDS = 5
+
 @app.get("/track/{tracking_id}")
 def track(tracking_id: str):
-    """Le pixel. Chargé par le client mail quand le mail est ouvert."""
+    """Le pixel. Chargé par le client mail quand le mail est ouvert.
+    Ignore les hits trop rapprochés de l'envoi (probable scan automatique
+    antivirus/anti-spam plutôt qu'une vraie ouverture, voir H4)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """UPDATE email_log SET opened_at = NOW()
-           WHERE tracking_id = %s AND opened_at IS NULL""",
+        f"""UPDATE email_log SET opened_at = NOW()
+           WHERE tracking_id = %s
+           AND opened_at IS NULL
+           AND sent_at < NOW() - INTERVAL '{PIXEL_ANTISCAN_DELAY_SECONDS} seconds'""",
         (tracking_id,),
     )
     conn.commit()
