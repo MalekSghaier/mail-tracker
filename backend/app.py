@@ -90,7 +90,10 @@ PIXEL_ANTISCAN_DELAY_SECONDS = 5
 def track(tracking_id: str):
     """Le pixel. Chargé par le client mail quand le mail est ouvert.
     Ignore les hits trop rapprochés de l'envoi (probable scan automatique
-    antivirus/anti-spam plutôt qu'une vraie ouverture, voir H4)."""
+    antivirus/anti-spam plutôt qu'une vraie ouverture, voir H4).
+    Cache désactivé explicitement (voir H5) pour que chaque chargement
+    du pixel déclenche bien une requête vers ce serveur, même à travers
+    un proxy d'entreprise ou un client mail qui cache les images par défaut."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -103,7 +106,15 @@ def track(tracking_id: str):
     conn.commit()
     cur.close()
     conn.close()
-    return FileResponse("pixel.png", media_type="image/png")
+    return FileResponse(
+        "pixel.png",
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/alerts")
