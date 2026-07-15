@@ -549,7 +549,15 @@ async function doLogin() {
   }
 }
 
-function logout() {
+async function logout() {
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+  } catch (e) {
+  
+  }
   token = null;
   localStorage.removeItem('admin_token');
   showLogin();
