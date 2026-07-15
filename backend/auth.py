@@ -8,8 +8,15 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from db import get_conn
 
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET n'est pas défini. Définis cette variable d'environnement "
+        "avant de démarrer l'application (aucune valeur par défaut n'est "
+        "utilisée pour des raisons de sécurité)."
+    )
 JWT_ALGORITHM = "HS256"
+
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 365 * 10))
 
 
@@ -78,13 +85,12 @@ def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer_schem
     admin_id = payload.get("admin_id")
     if not admin_id:
         raise HTTPException(status_code=401, detail="Token invalide")
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT is_active FROM admins WHERE id = %s", (admin_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    
+    with get_conn() as conn:
+      cur = conn.cursor()
+      cur.execute("SELECT is_active FROM admins WHERE id = %s", (admin_id,))
+      row = cur.fetchone()
+      cur.close()
 
     if not row:
         raise HTTPException(status_code=401, detail="Compte introuvable")
@@ -111,15 +117,15 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme
         raise HTTPException(status_code=403, detail="Accès refusé")
 
     if payload.get("role") == "user" and payload.get("user_id"):
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT email, department, account_role, is_active FROM app_users WHERE id = %s",
-            (payload["user_id"],),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT email, department, account_role, is_active FROM app_users WHERE id = %s",
+                (payload["user_id"],),
+            )
+            row = cur.fetchone()
+            cur.close()
+
 
         if not row:
             raise HTTPException(status_code=401, detail="Compte introuvable")

@@ -26,7 +26,7 @@ namespace MailDetectorAgent
             }
             catch (Exception)
             {
-                // Ignore et utilise le repli ci-dessous.
+                // Ignore : l'appelant doit gérer le cas null (repli emoji, etc.)
             }
             return SystemIcons.Application;
         }

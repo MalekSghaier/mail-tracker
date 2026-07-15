@@ -54,9 +54,8 @@ namespace MailDetectorAgent
             ClientSize = new Size(CardWidth, CardHeight);
             BackColor = BgColor;
             ShowInTaskbar = true;
-            Text = "Mail Detector — Connexion"; // texte affiché au survol dans la barre des tâches
+            Text = "Mail Detector — Connexion";
             Icon = IconHelper.GetTrayIcon();
-
 
             ApplyRoundedRegion();
 
@@ -82,8 +81,6 @@ namespace MailDetectorAgent
                 using var brush = new LinearGradientBrush(rect, GoldAccent, GoldDim, LinearGradientMode.ForwardDiagonal);
                 e.Graphics.FillPath(brush, path);
 
-                // Essaie d'afficher le vrai logo ; retombe sur l'emoji enveloppe
-                // si le fichier est introuvable (POC sur un autre PC, par ex.).
                 using var logoImg = IconHelper.GetLogoImage();
                 if (logoImg != null)
                 {
