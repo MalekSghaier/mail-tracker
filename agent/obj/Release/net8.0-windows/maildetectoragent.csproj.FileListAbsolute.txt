@@ -1,0 +1,16 @@
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\MailDetectorAgent.exe
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\Assets\favicon.ico
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\MailDetectorAgent.deps.json
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\MailDetectorAgent.runtimeconfig.json
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\MailDetectorAgent.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Release\net8.0-windows\MailDetectorAgent.pdb
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.AssemblyInfoInputs.cache
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.AssemblyInfo.cs
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.csproj.CoreCompileInputs.cache
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.sourcelink.json
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\MailDetectorAgent.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\refint\MailDetectorAgent.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\MailDetectorAgent.pdb
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\maildetectoragent.genruntimeconfig.cache
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Release\net8.0-windows\ref\MailDetectorAgent.dll

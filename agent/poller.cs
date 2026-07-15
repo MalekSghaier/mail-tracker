@@ -4,6 +4,8 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Serilog;
+
 
 namespace MailDetectorAgent
 {
@@ -31,7 +33,7 @@ namespace MailDetectorAgent
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[Poller] erreur ack : {ex.Message}");
+                            Log.Error(ex, "[Poller] erreur ack");
                     }
                 },
                 async (trackingId, done) =>
@@ -44,7 +46,7 @@ namespace MailDetectorAgent
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[Poller] erreur reminder : {ex.Message}");
+                        Log.Error(ex, "[Poller] erreur reminder");
                     }
                 },
                 _apiBase);
@@ -124,7 +126,7 @@ namespace MailDetectorAgent
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Poller] erreur : {ex.Message}");
+                Log.Error(ex, "[Poller] erreur pendant CheckAlertsAsync");
             }
             finally
             {

@@ -14,3 +14,7 @@ C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\MailDetectorAg
 C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\maildetectoragent.genruntimeconfig.cache
 C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\ref\MailDetectorAgent.dll
 C:\Users\DELL\Desktop\mail-tracker\agent\bin\Debug\net8.0-windows\Assets\favicon.ico
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Debug\net8.0-windows\Serilog.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\bin\Debug\net8.0-windows\Serilog.Sinks.File.dll
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\maildetectoragent.csproj.AssemblyReference.cache
+C:\Users\DELL\Desktop\mail-tracker\agent\obj\Debug\net8.0-windows\maildete.A006A848.Up2Date
