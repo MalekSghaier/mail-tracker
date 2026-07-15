@@ -80,7 +80,7 @@ namespace MailDetectorAgent
 
         public void Start()
         {
-            _timer = new System.Windows.Forms.Timer { Interval = 3_000 }; // 3 sec
+            _timer = new System.Windows.Forms.Timer { Interval = 3_000 }; 
             _timer.Tick += async (_, _) => await CheckAlertsAsync();
             _timer.Start();
         }
