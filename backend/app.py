@@ -20,7 +20,7 @@ from fastapi import Depends
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
 from admin_page import router as admin_router
 from db import get_conn
-from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, build_alerts_filter
+from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, build_alerts_filter, revoke_token
 from fastapi import Header
 from tasks import compute_summary_task
 
@@ -512,6 +512,15 @@ def user_login(payload: UserLogin):
     token = create_access_token(subject=payload.username, role="user", extra={"user_id": row[0]})
     return {"access_token": token, "token_type": "bearer"}
 
+
+@app.post("/api/auth/logout")
+def logout(authorization: str = Header(None)):
+    """Révoque immédiatement le token courant."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token manquant")
+    token = authorization.removeprefix("Bearer ")
+    revoke_token(token)
+    return {"ok": True}
 
 def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
     """Génère le bloc HTML du rappel selon l'état actuel."""
