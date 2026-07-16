@@ -7,39 +7,36 @@ machine que ton PC) puisse joindre ce backend.
 """
 import html as html_module
 import os
-import uuid
+import uuid as uuid_lib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from ollama_client import generer_resume
-from fastapi import HTTPException, Depends
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
-from fastapi import Depends
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
 from admin_page import router as admin_router
-from db import get_conn
-from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, build_alerts_filter, revoke_token
-from fastapi import Header
+from db import get_db
+from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, revoke_token
 from tasks import compute_summary_task
-
+from contextlib import asynccontextmanager
+from sqlalchemy import or_
+from models import EmailLog, Admin, AppUser, Session
 
 load_dotenv()
+
 MILTER_SHARED_SECRET = os.getenv("MILTER_SHARED_SECRET")
+THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
+RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
+PIXEL_ANTISCAN_DELAY_SECONDS = 5
+
 app = FastAPI(title="Mail Detector POC")
 app.include_router(admin_router)
 
-THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
-RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
-
 
 def verify_milter_secret(x_milter_secret: str = Header(None)):
-    """Vérifie le secret partagé envoyé par le milter Zimbra. Sans ce
-    secret (ou avec une valeur incorrecte), la requête est rejetée —
-    évite l'injection de faux mails par quiconque atteint le port 8000."""
     if not MILTER_SHARED_SECRET:
-        # Mauvaise config serveur : mieux vaut bloquer que laisser ouvert.
         raise HTTPException(status_code=500, detail="MILTER_SHARED_SECRET non configuré côté serveur")
     if x_milter_secret != MILTER_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="Secret invalide")
@@ -61,50 +58,34 @@ def health():
 @app.post("/api/emails/register")
 def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):
     """Appelé par le milter Zimbra à chaque mail sortant intercepté.
-    Le résumé IA est calculé de façon asynchrone via Celery (voir H3) —
+    Le résumé IA est calculé de façon asynchrone via Celery —
     on répond au milter sans attendre Ollama."""
-    tracking_id = str(uuid.uuid4())
+    tracking_id = str(uuid_lib.uuid4())
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO email_log
-               (tracking_id, sender_email, recipient_email, cc_email, subject, body, ai_summary)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (tracking_id, payload.sender_email, payload.recipient_email, payload.cc_email,
-             payload.subject, payload.body, None),
+    with get_db() as db:
+        mail = EmailLog(
+            tracking_id=uuid_lib.UUID(tracking_id),
+            sender_email=payload.sender_email,
+            recipient_email=payload.recipient_email,
+            cc_email=payload.cc_email,
+            subject=payload.subject,
+            body=payload.body,
         )
-        cur.close()
+        db.add(mail)
 
     compute_summary_task.delay(tracking_id, payload.body)
 
     return {"tracking_id": tracking_id}
 
-
-# Délai en dessous duquel un hit du pixel est considéré comme un scan
-# automatique (antivirus, filtre anti-spam, proxy de sécurité) et non
-# comme une vraie ouverture par un humain (voir H4, mail_detector.md).
-PIXEL_ANTISCAN_DELAY_SECONDS = 5
-
-
 @app.get("/track/{tracking_id}")
 def track(tracking_id: str):
-    """Le pixel. Chargé par le client mail quand le mail est ouvert.
-    Ignore les hits trop rapprochés de l'envoi (probable scan automatique
-    antivirus/anti-spam plutôt qu'une vraie ouverture, voir H4).
-    Cache désactivé explicitement (voir H5) pour que chaque chargement
-    du pixel déclenche bien une requête vers ce serveur, même à travers
-    un proxy d'entreprise ou un client mail qui cache les images par défaut."""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"""UPDATE email_log SET opened_at = NOW()
-               WHERE tracking_id = %s
-               AND opened_at IS NULL
-               AND sent_at < NOW() - INTERVAL '{PIXEL_ANTISCAN_DELAY_SECONDS} seconds'""",
-            (tracking_id,),
-        )
-        cur.close()
+    with get_db() as db:
+        mail = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)).first()
+        if mail and mail.opened_at is None and mail.sent_at:
+            cutoff = datetime.now() - timedelta(seconds=PIXEL_ANTISCAN_DELAY_SECONDS)
+            if mail.sent_at < cutoff:
+                mail.opened_at = datetime.now()
+
     return FileResponse(
         "pixel.png",
         media_type="image/png",
@@ -115,412 +96,389 @@ def track(tracking_id: str):
         },
     )
 
+def _apply_role_filter(query, user: dict):
+    """Équivalent ORM de build_alerts_filter — appliqué directement sur
+    une requête SQLAlchemy plutôt que par concaténation de SQL texte."""
+    account_role = user.get("account_role", "employee")
+
+    if account_role == "superadmin":
+        return query
+
+    if account_role == "dept_admin":
+        department = user.get("department")
+        if not department:
+            return query.filter(False)
+        with get_db() as db:
+            emails = [r.email for r in db.query(AppUser.email).filter(AppUser.department == department).all()]
+        return query.filter(EmailLog.sender_email.in_(emails))
+
+    email = user.get("email")
+    if not email:
+        return query.filter(False)
+    return query.filter(EmailLog.sender_email == email)
 
 @app.get("/api/alerts")
 def get_alerts(user=Depends(get_current_user)):
-    with get_conn() as conn:
-        cur = conn.cursor()
+    from datetime import datetime, timedelta
 
-        filter_sql, filter_params = build_alerts_filter(user)
-
-        cur.execute(
-            f"""SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
-                      sent_at, reminder_done
-               FROM email_log
-               WHERE opened_at IS NULL
-               AND alert_acked = FALSE
-               AND reminder_done IS NULL
-               AND sent_at < NOW() - (%s * INTERVAL '1 minute')
-               {filter_sql}""",
-            (THRESHOLD_MINUTES, *filter_params),
+    with get_db() as db:
+        pending_q = db.query(EmailLog).filter(
+            EmailLog.opened_at.is_(None),
+            EmailLog.alert_acked.is_(False),
+            EmailLog.reminder_done.is_(None),
         )
+        cutoff = datetime.now() - timedelta(minutes=THRESHOLD_MINUTES)
+        pending_q = pending_q.filter(EmailLog.sent_at < cutoff)
+        pending_q = _apply_role_filter(pending_q, user)
+
         results = [
             {
-                "tracking_id": str(r[0]),
-                "sender": r[1],
-                "recipient": r[2],
-                "cc": r[3] or "",
-                "subject": r[4] or "",
-                "summary": r[5] or "",
-                "sent_at": str(r[6]),
-                "reminder_done": r[7],
+                "tracking_id": str(r.tracking_id), "sender": r.sender_email,
+                "recipient": r.recipient_email, "cc": r.cc_email or "",
+                "subject": r.subject or "", "summary": r.ai_summary or "",
+                "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
                 "category": "pending",
             }
-            for r in cur.fetchall()
+            for r in pending_q.all()
         ]
 
-        cur.execute(
-            f"""SELECT tracking_id, sender_email, recipient_email, cc_email, subject, ai_summary,
-                      sent_at, reminder_done
-               FROM email_log
-               WHERE alert_acked = TRUE
-               AND reminder_done IS NULL
-               AND opened_at IS NULL
-               {filter_sql}""",
-            filter_params,
+        seen_q = db.query(EmailLog).filter(
+            EmailLog.alert_acked.is_(True),
+            EmailLog.reminder_done.is_(None),
+            EmailLog.opened_at.is_(None),
         )
-        for r in cur.fetchall():
+        seen_q = _apply_role_filter(seen_q, user)
+
+        for r in seen_q.all():
             results.append({
-                "tracking_id": str(r[0]),
-                "sender": r[1],
-                "recipient": r[2],
-                "cc": r[3] or "",
-                "subject": r[4] or "",
-                "summary": r[5] or "",
-                "sent_at": str(r[6]),
-                "reminder_done": r[7],
+                "tracking_id": str(r.tracking_id), "sender": r.sender_email,
+                "recipient": r.recipient_email, "cc": r.cc_email or "",
+                "subject": r.subject or "", "summary": r.ai_summary or "",
+                "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
                 "category": "seen_no_answer",
             })
 
-        cur.close()
     return results
 
 @app.get("/api/auth/verify")
 def verify_token(user=Depends(get_current_user)):
-    """Endpoint léger utilisé par l'agent au démarrage pour vérifier
-    silencieusement si le token sauvegardé est encore valide."""
     return {"ok": True, "sub": user.get("sub"), "role": user.get("role")}
-
 
 @app.post("/api/alerts/{tracking_id}/ack")
 def ack_alert(tracking_id: str, user=Depends(get_current_user)):
-    """Appelé par l'agent C#/.NET après affichage du popup."""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE email_log SET alert_acked = TRUE WHERE tracking_id = %s", (tracking_id,))
-        cur.close()
+    with get_db() as db:
+        mail = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)).first()
+        if mail:
+            mail.alert_acked = True
     return {"ok": True}
-
 
 class ReminderAnswer(BaseModel):
     done: bool
 
-
 @app.post("/api/alerts/{tracking_id}/reminder")
 def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_current_user)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-        cur.execute(f"SELECT 1 FROM email_log WHERE tracking_id = %s {filter_sql}",
-                    (tracking_id, *filter_params))
-        if not cur.fetchone():
-            cur.close()
+    from datetime import datetime, timedelta
+
+    with get_db() as db:
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = _apply_role_filter(query, user)
+        mail = query.first()
+        if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
 
         if payload.done:
-            cur.execute(
-                """UPDATE email_log
-                   SET reminder_done = TRUE, reminder_answered_at = NOW(), reminder_recheck_at = NULL
-                   WHERE tracking_id = %s""",
-                (tracking_id,),
-            )
+            mail.reminder_done = True
+            mail.reminder_answered_at = datetime.now()
+            mail.reminder_recheck_at = None
         else:
-            cur.execute(
-                """UPDATE email_log
-                   SET reminder_done = FALSE, reminder_answered_at = NOW(),
-                       reminder_recheck_at = NOW() + (%s * INTERVAL '1 minute')
-                   WHERE tracking_id = %s""",
-                (RECHECK_MINUTES, tracking_id),
-            )
-        cur.close()
+            mail.reminder_done = False
+            mail.reminder_answered_at = datetime.now()
+            mail.reminder_recheck_at = datetime.now() + timedelta(minutes=RECHECK_MINUTES)
+
     return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
 
 
 class TrackingIds(BaseModel):
     ids: list
 
-
 @app.post("/api/alerts/states")
 def get_states(payload: TrackingIds, user=Depends(get_current_user)):
-    """Retourne l'état actuel (alert_acked, reminder_done) pour une liste
-    de tracking_ids — y compris ceux déjà ackés. Utilisé par l'agent pour
-    synchroniser son état local avec la base en temps quasi-réel.
-    Filtré par périmètre de l'utilisateur connecté (voir build_alerts_filter),
-    exactement comme /api/alerts : un tracking_id hors périmètre est
-    simplement absent du résultat, sans erreur explicite (comportement
-    cohérent avec un GET par lot, pas un accès direct par id)."""
     if not payload.ids:
         return {}
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-        cur.execute(
-            f"""SELECT tracking_id, alert_acked, reminder_done
-               FROM email_log
-               WHERE tracking_id = ANY(%s::uuid[])
-               {filter_sql}""",
-            (payload.ids, *filter_params),
-        )
-        rows = cur.fetchall()
-        cur.close()
-    return {
-        str(r[0]): {"alert_acked": r[1], "reminder_done": r[2]}
-        for r in rows
-    }
-
+    with get_db() as db:
+        uuids = [uuid_lib.UUID(i) for i in payload.ids]
+        query = db.query(EmailLog).filter(EmailLog.tracking_id.in_(uuids))
+        query = _apply_role_filter(query, user)
+        rows = query.all()
+        result = {            
+          str(r.tracking_id): {"alert_acked": r.alert_acked, "reminder_done": r.reminder_done}            
+          for r in rows        
+        }
+    return result
 
 @app.get("/api/alerts/{tracking_id}/status")
 def get_alert_status(tracking_id: str, user=Depends(get_current_user)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-        cur.execute(
-            f"""SELECT reminder_done, reminder_answered_at, opened_at
-               FROM email_log WHERE tracking_id = %s {filter_sql}""",
-            (tracking_id, *filter_params),
-        )
-        row = cur.fetchone()
-        cur.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="Mail introuvable")
-    return {
-        "reminder_done": row[0],
-        "reminder_answered_at": str(row[1]) if row[1] else None,
-        "opened_at": str(row[2]) if row[2] else None,
-    }
+    with get_db() as db:
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = _apply_role_filter(query, user)
+        mail = query.first()
 
+        if not mail:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+
+        result = {
+            "reminder_done": mail.reminder_done,
+            "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
+            "opened_at": str(mail.opened_at) if mail.opened_at else None,
+        }
+    return result
 
 @app.post("/api/alerts/{tracking_id}/finally-done")
 def finally_done(tracking_id: str, user=Depends(get_current_user)):
-    """Appelé depuis la page web quand l'employé clique 'J'ai finalement
-    fait le rappel'. Passe reminder_done à TRUE et annule le recheck."""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-        cur.execute(f"SELECT 1 FROM email_log WHERE tracking_id = %s {filter_sql}",
-                    (tracking_id, *filter_params))
-        if not cur.fetchone():
-            cur.close()
+    from datetime import datetime
+
+    with get_db() as db:
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = _apply_role_filter(query, user)
+        mail = query.first()
+        if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
 
-        cur.execute(
-            """UPDATE email_log
-               SET reminder_done = TRUE,
-                   reminder_answered_at = NOW(),
-                   reminder_recheck_at = NULL
-               WHERE tracking_id = %s""",
-            (tracking_id,),
-        )
-        cur.close()
-    return {"ok": True}
+        mail.reminder_done = True
+        mail.reminder_answered_at = datetime.now()
+        mail.reminder_recheck_at = None
 
+    return {"ok": True}
 
 @app.get("/api/history")
 def get_history(user=Depends(get_current_user)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-        cur.execute(
-            f"""SELECT tracking_id, sender_email, recipient_email, cc_email,
-                      subject, ai_summary, sent_at, opened_at,
-                      alert_acked, reminder_done, reminder_answered_at
-               FROM email_log
-               WHERE 1=1
-               {filter_sql}
-               ORDER BY
-                  CASE
-                    WHEN reminder_done = FALSE                              THEN 1
-                    WHEN reminder_done IS NULL AND alert_acked = FALSE      THEN 2
-                    WHEN reminder_done IS NULL AND alert_acked = TRUE       THEN 3
-                    WHEN opened_at IS NOT NULL AND reminder_done IS NULL    THEN 4
-                    WHEN reminder_done = TRUE                               THEN 5
-                    ELSE 6
-                  END ASC,
-                  sent_at DESC""",
-            filter_params,
-        )
-        rows = cur.fetchall()
-        cur.close()
-    return [
-        {
-            "tracking_id": str(r[0]),
-            "sender": r[1],
-            "recipient": r[2],
-            "cc": r[3] or "",
-            "subject": r[4] or "",
-            "summary": r[5] or "",
-            "sent_at": str(r[6]) if r[6] else "",
-            "opened_at": str(r[7]) if r[7] else None,
-            "alert_acked": r[8],
-            "reminder_done": r[9],
-            "reminder_answered_at": str(r[10]) if r[10] else None,
-        }
-        for r in rows
-    ]
+    with get_db() as db:
+        query = db.query(EmailLog)
+        query = _apply_role_filter(query, user)
+        rows = query.all()
+
+        def sort_key(r):
+            if r.reminder_done is False:
+                priority = 1
+            elif r.reminder_done is None and not r.alert_acked:
+                priority = 2
+            elif r.reminder_done is None and r.alert_acked:
+                priority = 3
+            elif r.opened_at is not None and r.reminder_done is None:
+                priority = 4
+            elif r.reminder_done is True:
+                priority = 5
+            else:
+                priority = 6
+            return (priority, -(r.sent_at.timestamp() if r.sent_at else 0))
+
+        rows = sorted(rows, key=sort_key)
+
+        result = [
+            {
+                "tracking_id": str(r.tracking_id), "sender": r.sender_email,
+                "recipient": r.recipient_email, "cc": r.cc_email or "",
+                "subject": r.subject or "", "summary": r.ai_summary or "",
+                "sent_at": str(r.sent_at) if r.sent_at else "",
+                "opened_at": str(r.opened_at) if r.opened_at else None,
+                "alert_acked": r.alert_acked, "reminder_done": r.reminder_done,
+                "reminder_answered_at": str(r.reminder_answered_at) if r.reminder_answered_at else None,
+            }
+            for r in rows
+        ]
+    return result
 
 
 class AdminLogin(BaseModel):
     username: str
     password: str
 
-
 class UserLogin(BaseModel):
     username: str
     password: str
-
 
 class UserCreate(BaseModel):
     username: str
     password: str
     email: str | None = None
     department: str | None = None
-    account_role: str = "employee"  # 'employee' | 'dept_admin' | 'superadmin'
-
+    account_role: str = "employee"
 
 @app.post("/api/admin/login")
 def admin_login(payload: AdminLogin):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id, password_hash FROM admins WHERE username = %s", (payload.username,))
-        row = cur.fetchone()
-        cur.close()
-    if not row or not verify_password(payload.password, row[1]):
-        raise HTTPException(status_code=401, detail="Identifiants invalides")
-    token = create_access_token(subject=payload.username, role="admin", extra={"admin_id": row[0]})
-    return {"access_token": token, "token_type": "bearer"}
+    with get_db() as db:
+        admin = db.query(Admin).filter(Admin.username == payload.username).first()
+        if not admin or not verify_password(payload.password, admin.password_hash):
+            raise HTTPException(status_code=401, detail="Identifiants invalides")
+        admin_id = admin.id
 
+    token = create_access_token(subject=payload.username, role="admin", extra={"admin_id": admin_id})
+    return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/api/admin/users")
 def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM app_users WHERE username = %s", (payload.username,))
-        if cur.fetchone():
-            cur.close()
+    with get_db() as db:
+        existing = db.query(AppUser).filter(AppUser.username == payload.username).first()
+        if existing:
             raise HTTPException(status_code=409, detail="Ce nom d'utilisateur existe déjà")
-        cur.execute(
-            """INSERT INTO app_users (username, email, password_hash, department, account_role, created_by_admin_id)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (payload.username, payload.email, hash_password(payload.password),
-             payload.department, payload.account_role, admin["admin_id"]),
-        )
-        user_id = cur.fetchone()[0]
-        cur.close()
-    return {"id": user_id, "username": payload.username}
 
+        user = AppUser(
+            username=payload.username,
+            email=payload.email,
+            password_hash=hash_password(payload.password),
+            department=payload.department,
+            account_role=payload.account_role,
+            created_by_admin_id=admin["admin_id"],
+        )
+        db.add(user)
+        db.flush()  # pour récupérer user.id avant le commit final
+        user_id = user.id
+
+    return {"id": user_id, "username": payload.username}
 
 @app.get("/api/admin/users")
 def list_users(admin=Depends(get_current_admin)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, username, email, is_active, created_at, department, account_role "
-            "FROM app_users ORDER BY created_at DESC"
-        )
-        rows = cur.fetchall()
-        cur.close()
-    return [
-        {
-            "id": r[0], "username": r[1], "email": r[2], "is_active": r[3],
-            "created_at": str(r[4]), "department": r[5], "account_role": r[6],
-        }
-        for r in rows
-    ]
-
+    with get_db() as db:
+        users = db.query(AppUser).order_by(AppUser.created_at.desc()).all()
+        result = [
+            {
+                "id": u.id, "username": u.username, "email": u.email, "is_active": u.is_active,
+                "created_at": str(u.created_at), "department": u.department, "account_role": u.account_role,
+            }
+            for u in users
+        ]
+    return result
 
 @app.delete("/api/admin/users/{user_id}")
 def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE app_users SET is_active = FALSE WHERE id = %s", (user_id,))
-        cur.close()
+    with get_db() as db:
+        user = db.query(AppUser).filter(AppUser.id == user_id).first()
+        if user:
+            user.is_active = False
     return {"ok": True}
-
 
 @app.post("/api/admin/users/{user_id}/activate")
 def activate_user(user_id: int, admin=Depends(get_current_admin)):
-    """Réactive un utilisateur précédemment désactivé."""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE app_users SET is_active = TRUE WHERE id = %s", (user_id,))
-        cur.close()
+    with get_db() as db:
+        user = db.query(AppUser).filter(AppUser.id == user_id).first()
+        if user:
+            user.is_active = True
     return {"ok": True}
-
 
 class UserRoleUpdate(BaseModel):
     department: str | None = None
-    account_role: str | None = None  # 'employee' | 'dept_admin' | 'superadmin'
-
+    account_role: str | None = None
 
 @app.patch("/api/admin/users/{user_id}/role")
 def update_user_role(user_id: int, payload: UserRoleUpdate, admin=Depends(get_current_admin)):
     if payload.account_role and payload.account_role not in ("employee", "dept_admin", "superadmin"):
         raise HTTPException(status_code=400, detail="Rôle invalide")
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """UPDATE app_users
-               SET department = COALESCE(%s, department),
-                   account_role = COALESCE(%s, account_role)
-               WHERE id = %s""",
-            (payload.department, payload.account_role, user_id),
-        )
-        cur.close()
-    return {"ok": True}
 
+    with get_db() as db:
+        user = db.query(AppUser).filter(AppUser.id == user_id).first()
+        if user:
+            if payload.department is not None:
+                user.department = payload.department
+            if payload.account_role is not None:
+                user.account_role = payload.account_role
+    return {"ok": True}
 
 @app.get("/api/admin/stats")
 def get_admin_stats(admin=Depends(get_current_admin)):
-    """Statistiques affichées en haut du tableau de bord admin."""
-    with get_conn() as conn:
-        cur = conn.cursor()
+    with get_db() as db:
+        total_users = db.query(AppUser).count()
+        active_users = db.query(AppUser).filter(AppUser.is_active.is_(True)).count()
+        inactive_users = db.query(AppUser).filter(AppUser.is_active.is_(False)).count()
 
-        cur.execute(
-            "SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active), "
-            "COUNT(*) FILTER (WHERE NOT is_active) FROM app_users"
-        )
-        total_users, active_users, inactive_users = cur.fetchone()
+        total_emails = db.query(EmailLog).count()
+        opened_emails = db.query(EmailLog).filter(EmailLog.opened_at.isnot(None)).count()
+        reminder_done = db.query(EmailLog).filter(EmailLog.reminder_done.is_(True)).count()
+        reminder_not_done = db.query(EmailLog).filter(EmailLog.reminder_done.is_(False)).count()
 
-        cur.execute("SELECT COUNT(*) FROM email_log")
-        total_emails = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM email_log WHERE opened_at IS NOT NULL")
-        opened_emails = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM email_log WHERE reminder_done = TRUE")
-        reminder_done = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM email_log WHERE reminder_done = FALSE")
-        reminder_not_done = cur.fetchone()[0]
-
-        cur.close()
     return {
         "users": {"total": total_users, "active": active_users, "inactive": inactive_users},
         "emails": {
-            "total": total_emails,
-            "opened": opened_emails,
-            "reminder_done": reminder_done,
-            "reminder_not_done": reminder_not_done,
+            "total": total_emails, "opened": opened_emails,
+            "reminder_done": reminder_done, "reminder_not_done": reminder_not_done,
         },
     }
 
-
 @app.post("/api/auth/login")
 def user_login(payload: UserLogin):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, password_hash, is_active FROM app_users WHERE username = %s",
-            (payload.username,),
-        )
-        row = cur.fetchone()
-        cur.close()
-    if not row or not verify_password(payload.password, row[1]):
-        raise HTTPException(status_code=401, detail="Identifiants invalides")
-    if not row[2]:
-        raise HTTPException(status_code=403, detail="Compte désactivé")
-    token = create_access_token(subject=payload.username, role="user", extra={"user_id": row[0]})
-    return {"access_token": token, "token_type": "bearer"}
+    with get_db() as db:
+        user = db.query(AppUser).filter(AppUser.username == payload.username).first()
+        if not user or not verify_password(payload.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Identifiants invalides")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Compte désactivé")
+        user_id = user.id
 
+    token = create_access_token(subject=payload.username, role="user", extra={"user_id": user_id})
+    return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/api/auth/logout")
 def logout(authorization: str = Header(None)):
-    """Révoque immédiatement le token courant."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token manquant")
     token = authorization.removeprefix("Bearer ")
     revoke_token(token)
     return {"ok": True}
+
+@app.get("/api/mail/{tracking_id}")
+def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
+    with get_db() as db:
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = _apply_role_filter(query, user)
+        mail = query.first()
+        if not mail:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+
+        history_query = db.query(EmailLog)
+        history_query = _apply_role_filter(history_query, user)
+        history_rows = history_query.all()
+
+        def sort_key(r):
+            if r.reminder_done is False:
+                priority = 1
+            elif r.reminder_done is None and not r.alert_acked:
+                priority = 2
+            elif r.reminder_done is None and r.alert_acked:
+                priority = 3
+            elif r.opened_at is not None and r.reminder_done is None:
+                priority = 4
+            elif r.reminder_done is True:
+                priority = 5
+            else:
+                priority = 6
+            return (priority, -(r.sent_at.timestamp() if r.sent_at else 0))
+
+        history_rows = sorted(history_rows, key=sort_key)
+
+        mail_data = {
+            "tracking_id": str(mail.tracking_id), "sender": mail.sender_email,
+            "recipient": mail.recipient_email, "cc": mail.cc_email or "",
+            "subject": mail.subject or "", "body": mail.body or "",
+            "summary": mail.ai_summary or "",
+            "sent_at": str(mail.sent_at) if mail.sent_at else "",
+            "opened_at": str(mail.opened_at) if mail.opened_at else None,
+            "alert_acked": mail.alert_acked, "reminder_done": mail.reminder_done,
+            "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
+        }
+        history_data = [
+            {
+                "tracking_id": str(h.tracking_id), "sender": h.sender_email,
+                "recipient": h.recipient_email, "cc": h.cc_email or "",
+                "subject": h.subject or "", "summary": h.ai_summary or "",
+                "sent_at": str(h.sent_at) if h.sent_at else "",
+                "opened_at": str(h.opened_at) if h.opened_at else None,
+                "alert_acked": h.alert_acked, "reminder_done": h.reminder_done,
+            }
+            for h in history_rows
+        ]
+
+    return {"mail": mail_data, "history": history_data}
+
+
 
 def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
     """Génère le bloc HTML du rappel selon l'état actuel."""
@@ -560,79 +518,6 @@ def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> st
         f'</div>'
         f'</div>'
     )
-
-
-@app.get("/api/mail/{tracking_id}")
-def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        filter_sql, filter_params = build_alerts_filter(user)
-
-        cur.execute(
-            f"""SELECT tracking_id, sender_email, recipient_email, cc_email,
-                      subject, body, ai_summary, sent_at, opened_at,
-                      alert_acked, reminder_done, reminder_answered_at
-               FROM email_log
-               WHERE tracking_id = %s {filter_sql}""",
-            (tracking_id, *filter_params),
-        )
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            raise HTTPException(status_code=404, detail="Mail introuvable")
-
-        cur.execute(
-            f"""SELECT tracking_id, sender_email, recipient_email, cc_email,
-                      subject, ai_summary, sent_at, opened_at,
-                      alert_acked, reminder_done
-               FROM email_log
-               WHERE 1=1 {filter_sql}
-               ORDER BY
-                  CASE
-                    WHEN reminder_done = FALSE                              THEN 1
-                    WHEN reminder_done IS NULL AND alert_acked = FALSE      THEN 2
-                    WHEN reminder_done IS NULL AND alert_acked = TRUE       THEN 3
-                    WHEN opened_at IS NOT NULL AND reminder_done IS NULL    THEN 4
-                    WHEN reminder_done = TRUE                               THEN 5
-                    ELSE 6
-                  END ASC,
-                  sent_at DESC""",
-            filter_params,
-        )
-        history = cur.fetchall()
-        cur.close()
-
-    return {
-        "mail": {
-            "tracking_id": str(row[0]),
-            "sender": row[1],
-            "recipient": row[2],
-            "cc": row[3] or "",
-            "subject": row[4] or "",
-            "body": row[5] or "",
-            "summary": row[6] or "",
-            "sent_at": str(row[7]) if row[7] else "",
-            "opened_at": str(row[8]) if row[8] else None,
-            "alert_acked": row[9],
-            "reminder_done": row[10],
-            "reminder_answered_at": str(row[11]) if row[11] else None,
-        },
-        "history": [
-            {
-                "tracking_id": str(h[0]),
-                "sender": h[1],
-                "recipient": h[2],
-                "cc": h[3] or "",
-                "subject": h[4] or "",
-                "summary": h[5] or "",
-                "sent_at": str(h[6]) if h[6] else "",
-                "opened_at": str(h[7]) if h[7] else None,
-                "alert_acked": h[8],
-                "reminder_done": h[9],
-            }
-            for h in history
-        ],
-    }
 
 
 @app.get("/mail/{tracking_id}", response_class=HTMLResponse)
