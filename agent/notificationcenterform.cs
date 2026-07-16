@@ -170,7 +170,6 @@ namespace MailDetectorAgent
                 BackColor = alert.category switch
                 {
                     "seen_no_answer" => Color.FromArgb(255, 90, 156, 240), // bleu
-                    "not_validated"  => Color.FromArgb(255, 212, 96, 96),  // rouge
                     _                => GoldAccent,                         // doré
                 },
                 Dock = DockStyle.Left,
@@ -202,7 +201,6 @@ namespace MailDetectorAgent
             string titleText = alert.category switch
             {
                 "seen_no_answer" => "Vu — rappel en attente",
-                "not_validated"  => "Non validé — rappel non effectué",
                 _                => "Mail non ouvert",
             };
             var title = MakeLine(titleText, Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);

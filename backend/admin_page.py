@@ -613,16 +613,22 @@ const ROLE_LABELS = {
   superadmin: 'Super admin',
 };
 
-async function loadUsers() {
+let usersOffset = 0;
+const USERS_PAGE_SIZE = 50;
+
+async function loadUsers(offset = 0) {
   try {
-    const resp = await authFetch('/api/admin/users');
-    const users = await resp.json();
+    const resp = await authFetch(`/api/admin/users?limit=${USERS_PAGE_SIZE}&offset=${offset}`);
+    const data = await resp.json();
+    const users = data.items;
+    usersOffset = data.offset;
     const tbody = document.getElementById('users-tbody');
     const emptyState = document.getElementById('empty-state');
 
     if (users.length === 0) {
       tbody.innerHTML = '';
       emptyState.style.display = 'block';
+      renderUsersPagination(data.total, data.limit, data.offset);
       return;
     }
     emptyState.style.display = 'none';
@@ -643,8 +649,30 @@ async function loadUsers() {
         </td>
       </tr>
     `).join('');
+
+    renderUsersPagination(data.total, data.limit, data.offset);
   } catch (e) { /* déjà géré par authFetch */ }
 }
+
+function renderUsersPagination(total, limit, offset) {
+  let bar = document.getElementById('users-pagination');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'users-pagination';
+    bar.style.cssText = 'display:flex; gap:12px; align-items:center; margin-top:16px; font-size:13px; color:var(--meta);';
+    document.getElementById('users-tbody').closest('table').after(bar);
+  }
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + limit, total);
+  bar.innerHTML = `
+    <button class="btn" ${hasPrev ? '' : 'disabled'} onclick="loadUsers(${Math.max(0, offset - limit)})">← Précédent</button>
+    <span>${from}–${to} sur ${total}</span>
+    <button class="btn" ${hasNext ? '' : 'disabled'} onclick="loadUsers(${offset + limit})">Suivant →</button>
+  `;
+}
+
 
 let editingUserId = null;
 
