@@ -7,7 +7,8 @@ import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from db import get_conn
+from db import get_db
+from models import Admin, AppUser, Session
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -44,20 +45,21 @@ def create_access_token(subject: str, role: str, extra: dict | None = None) -> s
     contrairement à un stockage en clair. Sans expiration (conforme au
     cadrage mail_detector.md) : la révocation se fait uniquement via
     suppression explicite de la session (logout, désactivation de compte)."""
-    token = secrets.token_hex(32)  
+    token = secrets.token_hex(32)
     token_hash = _hash_token(token)
 
     admin_id = (extra or {}).get("admin_id")
     user_id = (extra or {}).get("user_id")
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO sessions (token_hash, role, subject, admin_id, user_id)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (token_hash, role, subject, admin_id, user_id),
+    with get_db() as db:
+        session = Session(
+            token_hash=token_hash,
+            role=role,
+            subject=subject,
+            admin_id=admin_id,
+            user_id=user_id,
         )
-        cur.close()
+        db.add(session)
 
     return token
 
@@ -65,10 +67,8 @@ def create_access_token(subject: str, role: str, extra: dict | None = None) -> s
 def revoke_token(token: str) -> None:
     """Supprime une session — révocation immédiate et définitive."""
     token_hash = _hash_token(token)
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM sessions WHERE token_hash = %s", (token_hash,))
-        cur.close()
+    with get_db() as db:
+        db.query(Session).filter(Session.token_hash == token_hash).delete()
 
 
 def _load_session(token: str) -> dict:
@@ -76,26 +76,17 @@ def _load_session(token: str) -> dict:
     de comparaison sur le token en clair, jamais de token en clair stocké."""
     token_hash = _hash_token(token)
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT role, subject, admin_id, user_id
-               FROM sessions WHERE token_hash = %s""",
-            (token_hash,),
-        )
-        row = cur.fetchone()
-        cur.close()
+    with get_db() as db:
+        session = db.query(Session).filter(Session.token_hash == token_hash).first()
+        if not session:
+            raise HTTPException(status_code=401, detail="Token invalide")
 
-    if not row:
-        raise HTTPException(status_code=401, detail="Token invalide")
-
-    role, subject, admin_id, user_id = row
-    payload = {"sub": subject, "role": role}
-    if admin_id:
-        payload["admin_id"] = admin_id
-    if user_id:
-        payload["user_id"] = user_id
-    return payload
+        payload = {"sub": session.subject, "role": session.role}
+        if session.admin_id:
+            payload["admin_id"] = session.admin_id
+        if session.user_id:
+            payload["user_id"] = session.user_id
+        return payload
 
 
 # ---------- dependencies FastAPI ----------
@@ -122,67 +113,33 @@ def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer_schem
     if not admin_id:
         raise HTTPException(status_code=401, detail="Token invalide")
 
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT is_active FROM admins WHERE id = %s", (admin_id,))
-        row = cur.fetchone()
-        cur.close()
-
-    if not row:
-        raise HTTPException(status_code=401, detail="Compte introuvable")
-    if not row[0]:
-        raise HTTPException(status_code=403, detail="Compte désactivé")
+    with get_db() as db:
+        admin = db.query(Admin).filter(Admin.id == admin_id).first()
+        if not admin:
+            raise HTTPException(status_code=401, detail="Compte introuvable")
+        if not admin.is_active:
+            raise HTTPException(status_code=403, detail="Compte désactivé")
 
     return payload
 
-
 def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
-    """Valide le token, puis — pour les comptes 'user' — relit le
-    département et le rôle métier DEPUIS LA BASE à chaque requête plutôt
-    que de faire confiance au contenu du token."""
     payload = _get_payload(creds)
     if payload.get("role") not in ("admin", "user"):
         raise HTTPException(status_code=403, detail="Accès refusé")
 
+    if payload.get("role") == "admin":
+        payload["account_role"] = "superadmin"
+
     if payload.get("role") == "user" and payload.get("user_id"):
-        with get_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT email, department, account_role, is_active FROM app_users WHERE id = %s",
-                (payload["user_id"],),
-            )
-            row = cur.fetchone()
-            cur.close()
+        with get_db() as db:
+            user = db.query(AppUser).filter(AppUser.id == payload["user_id"]).first()
+            if not user:
+                raise HTTPException(status_code=401, detail="Compte introuvable")
+            if not user.is_active:
+                raise HTTPException(status_code=403, detail="Compte désactivé")
 
-        if not row:
-            raise HTTPException(status_code=401, detail="Compte introuvable")
-        if not row[3]:
-            raise HTTPException(status_code=403, detail="Compte désactivé")
-
-        payload["email"] = row[0]
-        payload["department"] = row[1]
-        payload["account_role"] = row[2] or "employee"
+            payload["email"] = user.email
+            payload["department"] = user.department
+            payload["account_role"] = user.account_role or "employee"
 
     return payload
-
-
-def build_alerts_filter(user: dict) -> tuple[str, list]:
-
-    account_role = user.get("account_role", "employee")
-
-    if account_role == "superadmin":
-        return "", []
-
-    if account_role == "dept_admin":
-        department = user.get("department")
-        if not department:
-            return "AND FALSE", []
-        return (
-            "AND sender_email IN (SELECT email FROM app_users WHERE department = %s)",
-            [department],
-        )
-
-    email = user.get("email")
-    if not email:
-        return "AND FALSE", []
-    return "AND sender_email = %s", [email]
