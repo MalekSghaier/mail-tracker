@@ -52,7 +52,6 @@ namespace MailDetectorAgent
                     _singleForm.Close();
             }
 
-            // Tous les items sont désormais "pending" (catégorie unique).
             foreach (var a in alertList)
             {
                 bool isNew = !_pending.ContainsKey(a.tracking_id);
@@ -61,8 +60,8 @@ namespace MailDetectorAgent
                 {
                     _pending[a.tracking_id] = a;
                     _reminderStatus[a.tracking_id] = a.reminder_done;
-                    if (a.category == "seen_no_answer" || a.category == "not_validated")
-                        _minimizedSet.Add(a.tracking_id); // silencieux dès l'arrivée
+                    if (a.category == "seen_no_answer" )
+                        _minimizedSet.Add(a.tracking_id);
                     Refresh();
                     if (a.category == "pending") await Task.Delay(600);
                 }
@@ -79,10 +78,6 @@ namespace MailDetectorAgent
                         _pending[a.tracking_id] = a;
                         _reminderStatus[a.tracking_id] = a.reminder_done;
 
-                        // Cas recheck : l'alerte revient en "pending" avec
-                        // reminder_done=NULL après avoir été "not_validated".
-                        // On la retire de _minimizedSet pour qu'un nouveau popup
-                        // s'affiche (pas juste la bulle silencieuse).
                         if (a.category == "pending" && prevCategory != "pending")
                         {
                             _minimizedSet.Remove(a.tracking_id);
