@@ -1,30 +1,20 @@
 """
 Script à lancer une seule fois, en local, pour créer le tout premier compte
-admin ARS. Ensuite les admins se connectent via POST /api/admin/login et
-ajoutent des users via POST /api/admin/users — plus besoin de ce script.
+admin ARS.
 """
 import getpass
 import hmac
 import os
 
-import psycopg2
 from dotenv import load_dotenv
 
 from auth import hash_password
+from db import get_db
+from models import Admin
 
 load_dotenv()
 
 MIN_PASSWORD_LENGTH = 8
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT", 5432),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-    )
 
 
 def main():
@@ -48,26 +38,16 @@ def main():
         print(f"Le mot de passe doit contenir au moins {MIN_PASSWORD_LENGTH} caractères.")
         return
 
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT id FROM admins WHERE username = %s", (username,))
-            if cur.fetchone():
-                print(f"Le nom d'utilisateur '{username}' existe déjà. Abandon.")
-                return
+    with get_db() as db:
+        existing = db.query(Admin).filter(Admin.username == username).first()
+        if existing:
+            print(f"Le nom d'utilisateur '{username}' existe déjà. Abandon.")
+            return
 
-            cur.execute(
-                "INSERT INTO admins (username, password_hash) VALUES (%s, %s) RETURNING id",
-                (username, hash_password(password)),
-            )
-            admin_id = cur.fetchone()[0]
-            conn.commit()
-            print(f"Admin créé avec l'id {admin_id}.")
-        finally:
-            cur.close()
-    finally:
-        conn.close()
+        admin = Admin(username=username, password_hash=hash_password(password))
+        db.add(admin)
+        db.flush()  # pour récupérer admin.id avant le commit final
+        print(f"Admin créé avec l'id {admin.id}.")
 
 
 if __name__ == "__main__":
