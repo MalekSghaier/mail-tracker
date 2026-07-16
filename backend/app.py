@@ -1,10 +1,3 @@
-"""
-Backend du POC Mail Detector — appelé par le MILTER (pas par sender.py).
-Lancer avec : uvicorn app:app --reload --port 8000 --host 0.0.0.0
-
---host 0.0.0.0 est nécessaire pour que le serveur Zimbra (sur une autre
-machine que ton PC) puisse joindre ce backend.
-"""
 import html as html_module
 import os
 import uuid as uuid_lib
@@ -14,8 +7,6 @@ from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from ollama_client import generer_resume
-from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
-from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user
 from admin_page import router as admin_router
 from db import get_db
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, revoke_token
@@ -119,7 +110,6 @@ def _apply_role_filter(query, user: dict):
 
 @app.get("/api/alerts")
 def get_alerts(user=Depends(get_current_user)):
-    from datetime import datetime, timedelta
 
     with get_db() as db:
         pending_q = db.query(EmailLog).filter(
@@ -177,8 +167,6 @@ class ReminderAnswer(BaseModel):
 
 @app.post("/api/alerts/{tracking_id}/reminder")
 def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_current_user)):
-    from datetime import datetime, timedelta
-
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
         query = _apply_role_filter(query, user)
@@ -199,7 +187,7 @@ def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_cur
 
 
 class TrackingIds(BaseModel):
-    ids: list
+    ids: list[uuid_lib.UUID]
 
 @app.post("/api/alerts/states")
 def get_states(payload: TrackingIds, user=Depends(get_current_user)):
@@ -235,7 +223,6 @@ def get_alert_status(tracking_id: str, user=Depends(get_current_user)):
 
 @app.post("/api/alerts/{tracking_id}/finally-done")
 def finally_done(tracking_id: str, user=Depends(get_current_user)):
-    from datetime import datetime
 
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
@@ -251,7 +238,7 @@ def finally_done(tracking_id: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 @app.get("/api/history")
-def get_history(user=Depends(get_current_user)):
+def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0):
     with get_db() as db:
         query = db.query(EmailLog)
         query = _apply_role_filter(query, user)
@@ -273,6 +260,8 @@ def get_history(user=Depends(get_current_user)):
             return (priority, -(r.sent_at.timestamp() if r.sent_at else 0))
 
         rows = sorted(rows, key=sort_key)
+        total = len(rows)
+        rows = rows[offset:offset + limit]
 
         result = [
             {
@@ -286,7 +275,7 @@ def get_history(user=Depends(get_current_user)):
             }
             for r in rows
         ]
-    return result
+    return {"total": total, "limit": limit, "offset": offset, "items": result}
 
 
 class AdminLogin(BaseModel):
@@ -337,9 +326,17 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
     return {"id": user_id, "username": payload.username}
 
 @app.get("/api/admin/users")
-def list_users(admin=Depends(get_current_admin)):
+def list_users(admin=Depends(get_current_admin), limit: int = 50, offset: int = 0):
     with get_db() as db:
-        users = db.query(AppUser).order_by(AppUser.created_at.desc()).all()
+        total = db.query(AppUser).count()
+        users = ( 
+          db.query(AppUser)
+          .order_by(AppUser.created_at.desc())
+          .offset(offset)
+          .limit(limit)
+          .all()
+        )
+        
         result = [
             {
                 "id": u.id, "username": u.username, "email": u.email, "is_active": u.is_active,
@@ -347,7 +344,8 @@ def list_users(admin=Depends(get_current_admin)):
             }
             for u in users
         ]
-    return result
+    return {"total": total, "limit": limit, "offset": offset, "items": result}
+
 
 @app.delete("/api/admin/users/{user_id}")
 def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
