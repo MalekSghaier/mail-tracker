@@ -41,13 +41,6 @@ namespace MailDetectorAgent
             _poller.Start();
         }
 
-        /// <summary>
-        /// Déconnexion manuelle demandée par l'utilisateur via le menu du
-        /// tray (voir L10). Révoque la session côté serveur, efface le
-        /// token local, masque l'icône, puis relance immédiatement le
-        /// flux d'authentification pour permettre à un autre utilisateur
-        /// de se connecter sur ce même poste (postes partagés).
-        /// </summary>
         private async Task LogoutAsync()
         {
             _poller.Stop();
@@ -64,9 +57,7 @@ namespace MailDetectorAgent
                 }
                 catch (Exception)
                 {
-                    // Le serveur peut être injoignable ; on efface quand
-                    // même le token localement pour ne jamais bloquer
-                    // l'utilisateur sur ce poste.
+
                 }
             }
 
