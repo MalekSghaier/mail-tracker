@@ -47,10 +47,7 @@ def health():
 
 
 @app.post("/api/emails/register")
-def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):
-    """Appelé par le milter Zimbra à chaque mail sortant intercepté.
-    Le résumé IA est calculé de façon asynchrone via Celery —
-    on répond au milter sans attendre Ollama."""
+def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):  
     tracking_id = str(uuid_lib.uuid4())
 
     with get_db() as db:
