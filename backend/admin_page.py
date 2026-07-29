@@ -7,7 +7,7 @@ Route : GET /admin
     from admin_page import router as admin_router
     app.include_router(admin_router)
 
-Endpoints backend nécessaires (à ajouter dans app.py si absents) :
+Endpoints backend nécessaires 
     POST /api/admin/users/{id}/activate   → réactive un utilisateur désactivé
     GET  /api/admin/stats                  → statistiques (users + mails)
 """
@@ -406,12 +406,16 @@ def admin_page():
           <input id="new-username" type="text">
         </div>
         <div>
-          <label>Email (optionnel)</label>
-          <input id="new-email" type="email">
+          <label>Email à surveiller</label>
+          <input id="new-email" type="email" required>
         </div>
         <div>
           <label>Mot de passe</label>
           <input id="new-password" type="password">
+        </div>
+        <div>
+          <label>Mot de passe de la boîte mail</label>
+          <input id="new-imap-password" type="password">
         </div>
         <div>
           <label>Département</label>
@@ -424,13 +428,16 @@ def admin_page():
             <option value="dept_admin">Chef de département</option>
             <option value="superadmin">Super admin (voit tout)</option>
           </select>
+          <div id="role-hint" style="font-size:11.5px;color:var(--meta);margin-top:6px;">
+            Un chef de département verra les alertes de tous les employés du même département.
+          </div>
         </div>
         <button class="btn btn-primary" id="add-user-btn" onclick="addUser()">
           <span class="btn-label">Ajouter</span>
           <span class="spinner"></span>
         </button>
       </div>
-      <div class="msg-ok" id="add-ok">Utilisateur créé.</div>
+      <div class="msg-ok" id="add-ok">Utilisateur créé, boîte mail surveillée.</div>
       <div class="msg-err" id="add-err"></div>
     </div>
 
@@ -442,7 +449,7 @@ def admin_page():
       <div class="table-scroll">
         <table>
           <thead>
-            <tr><th>Nom d'utilisateur</th><th>Email</th><th>Département</th><th>Rôle</th><th>Statut</th><th>Créé le</th><th></th></tr>
+            <tr><th>Nom d'utilisateur</th><th>Email</th><th>Département</th><th>Rôle</th><th>Statut</th><th>IMAP</th><th>Créé le</th><th>Actions</th></tr>
           </thead>
           <tbody id="users-tbody"></tbody>
         </table>
@@ -519,7 +526,7 @@ async function doLogin() {
   errEl.style.display = 'none';
 
   if (!username || !password) {
-    errEl.textContent = "Merci de renseigner les deux champs.";
+    errEl.textContent = "Nom d'utilisateur et mot de passe sont requis.";
     errEl.style.display = 'block';
     return;
   }
@@ -632,7 +639,6 @@ async function loadUsers(offset = 0) {
       return;
     }
     emptyState.style.display = 'none';
-
     tbody.innerHTML = users.map(u => `
       <tr class="${u.is_active ? '' : 'row-inactive'}">
         <td class="username-cell">${escapeHtml(u.username)}</td>
@@ -640,6 +646,7 @@ async function loadUsers(offset = 0) {
         <td>${escapeHtml(u.department || '—')}</td>
         <td><span class="role-badge role-${u.account_role}">${ROLE_LABELS[u.account_role] || u.account_role}</span></td>
         <td>${u.is_active ? '<span class="badge-active">● Actif</span>' : '<span class="badge-inactive">● Désactivé</span>'}</td>
+        <td>${u.imap_monitored ? '<span class="badge-active">✓ Surveillé</span>' : '<span class="badge-inactive">—</span>'}</td>
         <td>${String(u.created_at).slice(0,16).replace('T',' ')}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit" onclick='openEditRole(${JSON.stringify(u)})'>Modifier</button>
@@ -713,6 +720,7 @@ async function addUser() {
   const username = document.getElementById('new-username').value.trim();
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
+  const imapPassword = document.getElementById('new-imap-password').value;
   const department = document.getElementById('new-department').value.trim();
   const account_role = document.getElementById('new-role').value;
   const okEl = document.getElementById('add-ok');
@@ -721,8 +729,8 @@ async function addUser() {
   okEl.style.display = 'none';
   errEl.style.display = 'none';
 
-  if (!username || !password) {
-    errEl.textContent = "Nom d'utilisateur et mot de passe requis.";
+  if (!username || !password || !email || !imapPassword) {
+    errEl.textContent = "Nom d'utilisateur, email, mot de passe agent et mot de passe boîte mail sont requis.";
     errEl.style.display = 'block';
     return;
   }
@@ -733,7 +741,8 @@ async function addUser() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username, email: email || null, password,
+        username, email, password,
+        imap_password: imapPassword,
         department: department || null, account_role
       })
     });
@@ -742,6 +751,7 @@ async function addUser() {
       document.getElementById('new-username').value = '';
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
+      document.getElementById('new-imap-password').value = '';
       document.getElementById('new-department').value = '';
       document.getElementById('new-role').value = 'employee';
       loadUsers();

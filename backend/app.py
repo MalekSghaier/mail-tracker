@@ -13,12 +13,16 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 from tasks import compute_summary_task
 from contextlib import asynccontextmanager
 from sqlalchemy import or_
-from models import EmailLog, Admin, AppUser, Session
+from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog,ImapAccount, ReceivedMailLog, ImapExcludedPattern
+from crypto_utils import encrypt_secret
+
+
 
 load_dotenv()
 
 MILTER_SHARED_SECRET = os.getenv("MILTER_SHARED_SECRET")
 THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
+IMAP_ALERT_THRESHOLD_MINUTES = int(os.getenv("IMAP_ALERT_THRESHOLD_MINUTES", 2))  # Normalement devrais etre 48h mais cas de test
 RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
 PIXEL_ANTISCAN_DELAY_SECONDS = 5
 
@@ -39,6 +43,10 @@ class EmailRegister(BaseModel):
     cc_email: str | None = None
     subject: str
     body: str
+
+class ExcludedPatternCreate(BaseModel):
+    pattern: str
+    description: str | None = None
 
 
 @app.get("/api/health")
@@ -286,7 +294,8 @@ class UserLogin(BaseModel):
 class UserCreate(BaseModel):
     username: str
     password: str
-    email: str | None = None
+    email: str | None = None                         
+    imap_password: str | None = None                
     department: str | None = None
     account_role: str = "employee"
 
@@ -308,6 +317,11 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
         if existing:
             raise HTTPException(status_code=409, detail="Ce nom d'utilisateur existe déjà")
 
+        if payload.email:
+            existing_imap = db.query(ImapAccount).filter(ImapAccount.email == payload.email).first()
+            if existing_imap:
+                raise HTTPException(status_code=409, detail="Cet email est déjà surveillé par un autre compte")
+
         user = AppUser(
             username=payload.username,
             email=payload.email,
@@ -317,32 +331,80 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
             created_by_admin_id=admin["admin_id"],
         )
         db.add(user)
-        db.flush()  # pour récupérer user.id avant le commit final
+        db.flush()
+
+        # On ne crée un ImapAccount que si un email + mot de passe IMAP sont fournis.
+        # Un chef de département purement "superviseur" n'en a pas besoin.
+        if payload.email and payload.imap_password:
+            imap_account = ImapAccount(
+                label=payload.username,
+                email=payload.email,
+                encrypted_password=encrypt_secret(payload.imap_password),
+                app_user_id=user.id,
+            )
+            db.add(imap_account)
+            db.flush()
+
         user_id = user.id
 
     return {"id": user_id, "username": payload.username}
+
 
 @app.get("/api/admin/users")
 def list_users(admin=Depends(get_current_admin), limit: int = 50, offset: int = 0):
     with get_db() as db:
         total = db.query(AppUser).count()
-        users = ( 
-          db.query(AppUser)
-          .order_by(AppUser.created_at.desc())
-          .offset(offset)
-          .limit(limit)
-          .all()
+        users = (
+            db.query(AppUser)
+            .order_by(AppUser.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
         )
-        
-        result = [
-            {
+
+        result = []
+        for u in users:
+            imap_account = db.query(ImapAccount).filter(ImapAccount.app_user_id == u.id).first()
+            result.append({
                 "id": u.id, "username": u.username, "email": u.email, "is_active": u.is_active,
                 "created_at": str(u.created_at), "department": u.department, "account_role": u.account_role,
-            }
-            for u in users
-        ]
+                "imap_monitored": imap_account is not None,
+            })
     return {"total": total, "limit": limit, "offset": offset, "items": result}
 
+
+@app.get("/api/admin/imap-alerts")
+def get_imap_alerts(admin=Depends(get_current_admin)):
+    from datetime import datetime, timedelta
+
+    with get_db() as db:
+        cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
+
+        rows = (
+            db.query(ReceivedMailLog, ImapAccount)
+            .join(ImapAccount, ReceivedMailLog.imap_account_id == ImapAccount.id)
+            .filter(
+                ReceivedMailLog.is_seen.is_(False),
+                ReceivedMailLog.received_at.isnot(None),
+                ReceivedMailLog.received_at < cutoff,
+            )
+            .order_by(ReceivedMailLog.received_at.asc())
+            .all()
+        )
+
+        results = [
+            {
+                "account_label": account.label,
+                "account_email": account.email,
+                "sender": mail.sender_email or "",
+                "subject": mail.subject or "",
+                "received_at": str(mail.received_at) if mail.received_at else "",
+                "last_checked_at": str(mail.last_checked_at) if mail.last_checked_at else "",
+            }
+            for mail, account in rows
+        ]
+
+    return results
 
 @app.delete("/api/admin/users/{user_id}")
 def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
@@ -350,7 +412,13 @@ def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
         user = db.query(AppUser).filter(AppUser.id == user_id).first()
         if user:
             user.is_active = False
+            # Coupe aussi la surveillance IMAP liée — un compte désactivé
+            # ne doit plus déclencher d'alertes de mails reçus.
+            imap_account = db.query(ImapAccount).filter(ImapAccount.app_user_id == user_id).first()
+            if imap_account:
+                imap_account.is_active = False
     return {"ok": True}
+
 
 @app.post("/api/admin/users/{user_id}/activate")
 def activate_user(user_id: int, admin=Depends(get_current_admin)):
@@ -358,6 +426,9 @@ def activate_user(user_id: int, admin=Depends(get_current_admin)):
         user = db.query(AppUser).filter(AppUser.id == user_id).first()
         if user:
             user.is_active = True
+            imap_account = db.query(ImapAccount).filter(ImapAccount.app_user_id == user_id).first()
+            if imap_account:
+                imap_account.is_active = True
     return {"ok": True}
 
 class UserRoleUpdate(BaseModel):
@@ -407,9 +478,15 @@ def user_login(payload: UserLogin):
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Compte désactivé")
         user_id = user.id
+        account_role = user.account_role
 
     token = create_access_token(subject=payload.username, role="user", extra={"user_id": user_id})
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "account_role": account_role,
+    }
+
 
 @app.post("/api/auth/logout")
 def logout(authorization: str = Header(None)):
@@ -473,7 +550,95 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
 
     return {"mail": mail_data, "history": history_data}
 
+@app.get("/api/admin/imap-excluded-patterns")
+def list_excluded_patterns(admin=Depends(get_current_admin)):
+    with get_db() as db:
+        patterns = db.query(ImapExcludedPattern).order_by(ImapExcludedPattern.created_at.desc()).all()
+        result = [
+            {"id": p.id, "pattern": p.pattern, "description": p.description, "is_active": p.is_active}
+            for p in patterns
+        ]
+    return result
 
+@app.post("/api/admin/imap-excluded-patterns")
+def add_excluded_pattern(payload: ExcludedPatternCreate, admin=Depends(get_current_admin)):
+    with get_db() as db:
+        existing = db.query(ImapExcludedPattern).filter(ImapExcludedPattern.pattern == payload.pattern).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Ce motif existe déjà")
+        entry = ImapExcludedPattern(pattern=payload.pattern, description=payload.description)
+        db.add(entry)
+        db.flush()
+        pattern_id = entry.id
+    return {"id": pattern_id, "pattern": payload.pattern}
+
+@app.delete("/api/admin/imap-excluded-patterns/{pattern_id}")
+def delete_excluded_pattern(pattern_id: int, admin=Depends(get_current_admin)):
+    with get_db() as db:
+        pattern = db.query(ImapExcludedPattern).filter(ImapExcludedPattern.id == pattern_id).first()
+        if pattern:
+            db.delete(pattern)
+    return {"ok": True}
+
+
+def _apply_imap_role_filter(query, user: dict):
+    """Équivalent de _apply_role_filter, mais pour les alertes de mails REÇUS.
+    Un dept_admin/superadmin ne voit que les employés (role='employee'),
+    jamais ses propres mails ni ceux d'un autre superviseur."""
+    account_role = user.get("account_role", "employee")
+
+    if account_role == "superadmin":
+        return query.filter(AppUser.account_role == "employee")
+
+    if account_role == "dept_admin":
+        department = user.get("department")
+        if not department:
+            return query.filter(False)
+        return query.filter(
+            AppUser.department == department,
+            AppUser.account_role == "employee",
+        )
+
+    # un employé normal ne voit jamais les alertes des autres
+    return query.filter(False)
+
+
+@app.get("/api/imap-alerts")
+def get_own_imap_alerts(user=Depends(get_current_user)):
+    account_role = user.get("account_role", "employee")
+    if account_role not in ("dept_admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Réservé aux chefs de département et super admin")
+
+    with get_db() as db:
+        cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
+
+        query = (
+            db.query(ReceivedMailLog, ImapAccount, AppUser)
+            .join(ImapAccount, ReceivedMailLog.imap_account_id == ImapAccount.id)
+            .join(AppUser, ImapAccount.app_user_id == AppUser.id)
+            .filter(
+                ReceivedMailLog.is_seen.is_(False),
+                ReceivedMailLog.received_at.isnot(None),
+                ReceivedMailLog.received_at < cutoff,
+            )
+        )
+        query = _apply_imap_role_filter(query, user)
+        rows = query.order_by(ReceivedMailLog.received_at.asc()).all()
+
+        results = [
+            {
+                "account_label": account.label,
+                "account_email": account.email,
+                "employee_username": app_user.username,
+                "department": app_user.department,
+                "sender": mail.sender_email or "",
+                "subject": mail.subject or "",
+                "received_at": str(mail.received_at) if mail.received_at else "",
+            }
+            for mail, account, app_user in rows
+        ]
+
+    return results
 
 def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
     """Génère le bloc HTML du rappel selon l'état actuel."""

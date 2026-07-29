@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -6,13 +7,13 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Serilog;
 
-
 namespace MailDetectorAgent
 {
     public sealed class Poller
     {
         private readonly HttpClient _http = new();
         private readonly string _apiBase;
+        private readonly NotifyIcon _trayIcon;
         private System.Windows.Forms.Timer? _timer;
 
         public event Action? SessionExpired;
@@ -22,6 +23,7 @@ namespace MailDetectorAgent
 
         public Poller(NotifyIcon trayIcon)
         {
+            _trayIcon = trayIcon;
             _apiBase = Environment.GetEnvironmentVariable("MAIL_DETECTOR_API") ?? "http://localhost:8000";
 
             NotificationManager.Configure(
@@ -33,7 +35,7 @@ namespace MailDetectorAgent
                     }
                     catch (Exception ex)
                     {
-                            Log.Error(ex, "[Poller] erreur ack");
+                        Log.Error(ex, "[Poller] erreur ack");
                     }
                 },
                 async (trackingId, done) =>
@@ -62,6 +64,7 @@ namespace MailDetectorAgent
         {
             _http.DefaultRequestHeaders.Authorization = null;
         }
+
         public async Task<bool> VerifyTokenAsync()
         {
             if (_http.DefaultRequestHeaders.Authorization == null) return false;
@@ -72,16 +75,28 @@ namespace MailDetectorAgent
             }
             catch
             {
-                // Backend injoignable : on ne peut pas confirmer, on considère invalide
-                // par prudence pour ne jamais afficher de popup sans certitude.
                 return false;
             }
         }
 
+        private string? _accountRole;
+
+        public void SetAccountRole(string? role)
+        {
+            _accountRole = role;
+        }
+
         public void Start()
         {
-            _timer = new System.Windows.Forms.Timer { Interval = 3_000 }; 
-            _timer.Tick += async (_, _) => await CheckAlertsAsync();
+            _timer = new System.Windows.Forms.Timer { Interval = 3_000 };
+            _timer.Tick += async (_, _) =>
+            {
+                // --- Scénario A désactivé (mails envoyés non ouverts) ---
+                // await CheckAlertsAsync();
+
+                // --- Scénario B actif (mails reçus non ouverts) ---
+                await CheckImapAlertsAsync();
+            };
             _timer.Start();
         }
 
@@ -89,9 +104,12 @@ namespace MailDetectorAgent
 
         private bool _busy = false;
 
+        /*
+        --- SCÉNARIO A DÉSACTIVÉ — code conservé pour réactivation future ---
+
         private async Task CheckAlertsAsync()
         {
-            if (_busy) return; // évite le chevauchement si un cycle précédent est encore en cours
+            if (_busy) return;
             _busy = true;
             try
             {
@@ -100,9 +118,6 @@ namespace MailDetectorAgent
                 if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized
                     || resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
                 {
-                    // Session invalide (expirée ou compte désactivé) : on arrête
-                    // tout de suite le polling pour ne rien afficher, et on
-                    // prévient l'appelant pour qu'il relance le login.
                     Stop();
                     ClearAuthToken();
                     TokenStorage.Clear();
@@ -119,9 +134,6 @@ namespace MailDetectorAgent
 
                 if (alerts == null) return;
 
-                // Traite les alertes une par une (avec un court délai entre
-                // chacune) pour que la transition popup -> badge=2 -> badge=3
-                // soit visible, même si toutes arrivent dans le même poll.
                 await NotificationManager.AddAlertsAsync(alerts);
             }
             catch (Exception ex)
@@ -133,5 +145,49 @@ namespace MailDetectorAgent
                 _busy = false;
             }
         }
+        */
+
+        private bool _imapBusy = false;
+
+        private async Task CheckImapAlertsAsync()
+        {
+            if (_accountRole != "dept_admin" && _accountRole != "superadmin") return;
+            if (_imapBusy) return;
+            _imapBusy = true;
+
+            try
+            {
+                var resp = await _http.GetAsync($"{_apiBase}/api/imap-alerts");
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                    || resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    Stop();
+                    ClearAuthToken();
+                    TokenStorage.Clear();
+                    SessionExpired?.Invoke();
+                    return;
+                }
+
+                if (!resp.IsSuccessStatusCode) return;
+
+                var json = await resp.Content.ReadAsStringAsync();
+                var imapAlerts = JsonSerializer.Deserialize<ImapAlertDto[]>(
+                    json,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (imapAlerts == null) return;
+                ImapNotificationManager.AddAlerts(imapAlerts);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[Poller] erreur pendant CheckImapAlertsAsync");
+            }
+            finally
+            {
+                _imapBusy = false;
+            }
+        }
+
     }
 }

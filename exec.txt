@@ -1,0 +1,7 @@
+uvicorn app:app --reload
+
+celery -A tasks worker --loglevel=info --pool=solo
+
+celery -A tasks beat --loglevel=info
+
+taskkill /IM MailDetectorAgent.exe /F
