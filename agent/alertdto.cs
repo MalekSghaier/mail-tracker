@@ -12,4 +12,16 @@ namespace MailDetectorAgent
         public bool? reminder_done { get; set; } = null;
         public string category { get; set; } = "pending";
     }
+
+    public class ImapAlertDto
+    {
+        public string account_label { get; set; } = "";
+        public string account_email { get; set; } = "";
+        public string employee_username { get; set; } = "";
+        public string department { get; set; } = "";
+        public string sender { get; set; } = "";
+        public string subject { get; set; } = "";
+        public string received_at { get; set; } = "";
+        public string Key => $"{account_email}|{subject}|{received_at}";
+    }
 }

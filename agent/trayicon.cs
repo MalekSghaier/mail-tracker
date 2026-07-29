@@ -79,12 +79,17 @@ namespace MailDetectorAgent
         private bool EnsureAuthenticated()
         {
             var savedToken = TokenStorage.Load();
-            if (savedToken != null)
+            var savedRole = TokenStorage.LoadRole();
+            if (savedToken != null && savedRole != null)
             {
                 _poller.SetAuthToken(savedToken);
                 bool stillValid = Task.Run(() => _poller.VerifyTokenAsync()).GetAwaiter().GetResult();
-                if (stillValid) return true;
-
+                if (stillValid)
+                {
+                    _poller.SetAccountRole(savedRole);
+                    return true;
+                }
+        
                 _poller.ClearAuthToken();
                 TokenStorage.Clear();
             }
@@ -93,7 +98,9 @@ namespace MailDetectorAgent
             if (loginForm.ShowDialog() == DialogResult.OK && loginForm.Token != null)
             {
                 TokenStorage.Save(loginForm.Token);
+                TokenStorage.SaveRole(loginForm.AccountRole);
                 _poller.SetAuthToken(loginForm.Token);
+                _poller.SetAccountRole(loginForm.AccountRole);
                 return true;
             }
 

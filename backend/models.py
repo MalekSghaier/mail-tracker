@@ -61,3 +61,39 @@ class Session(Base):
     __table_args__ = (
         Index("idx_sessions_token_hash", "token_hash"),
     )
+
+
+
+class ImapAccount(Base):
+    __tablename__ = "imap_accounts"
+
+    id = Column(Integer, primary_key=True)
+    label = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=False), server_default=func.now())
+    app_user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True)
+
+
+class ReceivedMailLog(Base):
+    __tablename__ = "received_mail_log"
+
+    id = Column(Integer, primary_key=True)
+    imap_account_id = Column(Integer, ForeignKey("imap_accounts.id", ondelete="CASCADE"), nullable=False)
+    message_uid = Column(String, nullable=False)    
+    sender_email = Column(String, nullable=True)
+    subject = Column(String, nullable=True)
+    received_at = Column(DateTime(timezone=False), nullable=True)
+    is_seen = Column(Boolean, default=False, nullable=False)
+    last_checked_at = Column(DateTime(timezone=False), server_default=func.now())
+
+
+class ImapExcludedPattern(Base):
+    __tablename__ = "imap_excluded_patterns"
+
+    id = Column(Integer, primary_key=True)
+    pattern = Column(String, unique=True, nullable=False)  # ex: "linkedin.com", "noreply"
+    description = Column(String, nullable=True)             # ex: "Notifications LinkedIn"
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=False), server_default=func.now())

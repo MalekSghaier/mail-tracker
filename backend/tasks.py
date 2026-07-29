@@ -26,6 +26,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.reset_expired_reminders",
         "schedule": 30.0,
     },
+    "sync-imap-accounts-every-5min": {        
+        "task": "tasks.sync_all_imap_accounts",
+        "schedule": 300.0,  # 5 minutes
+    },
 }
 
 
@@ -72,3 +76,25 @@ def reset_expired_reminders():
         )
 
     return {"ok": True}
+
+@celery_app.task
+def sync_all_imap_accounts():
+    """Synchronise tous les comptes IMAP actifs"""
+    from db import get_db
+    from models import ImapAccount
+    from imap_checker import sync_account
+
+    with get_db() as db:
+        account_ids = [a.id for a in db.query(ImapAccount).filter(ImapAccount.is_active.is_(True)).all()]
+
+    for account_id in account_ids:
+        sync_account_task.delay(account_id)
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
+def sync_account_task(self, account_id: int):
+    from imap_checker import sync_account
+    try:
+        sync_account(account_id)
+    except Exception as exc:
+        raise self.retry(exc=exc)

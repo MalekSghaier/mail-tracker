@@ -9,16 +9,6 @@ using System.Windows.Forms;
 
 namespace MailDetectorAgent
 {
-    /// <summary>
-    /// Écran de connexion — affiché uniquement au premier lancement de
-    /// l'agent sur ce PC, ou si la session a expiré / a été révoquée.
-    /// L'utilisateur doit être un abonné créé au préalable par un admin
-    /// ARS via /admin — aucune auto-inscription possible ici.
-    ///
-    /// Carte flottante sans bordure système, coins arrondis, dégradé doré,
-    /// cohérente avec le style des popups (NotificationForm) et de la page
-    /// d'administration.
-    /// </summary>
     public sealed class LoginForm : Form
     {
         private const int CardWidth = 380;
@@ -43,6 +33,7 @@ namespace MailDetectorAgent
         private Point _dragStart;
 
         public string? Token { get; private set; }
+        public string? AccountRole { get; private set; }
 
         public LoginForm(string apiBase, HttpClient http)
         {
@@ -314,6 +305,11 @@ namespace MailDetectorAgent
                 var json = await resp.Content.ReadAsStringAsync();
                 using var doc = JsonDocument.Parse(json);
                 Token = doc.RootElement.GetProperty("access_token").GetString();
+                // lit le rôle renvoyé par /api/auth/login
+                if (doc.RootElement.TryGetProperty("account_role", out var roleProp))
+                {
+                    AccountRole = roleProp.GetString();
+                }
 
                 DialogResult = DialogResult.OK;
                 Close();
