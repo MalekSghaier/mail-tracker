@@ -185,7 +185,7 @@ namespace MailDetectorAgent
             string titleText = alert.category == "seen_no_answer" ? "Vu — relance en attente" : "Mail non lu";
             var title = MakeLine(titleText, Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);
             title.Cursor = Cursors.Hand;
-            title.Click += (_, _) => OpenDetailPage(alert.id);
+            title.Click += (_, _) => OpenDetailPage(alert.tracking_id);
 
             var who = MakeLine($"{alert.employee_username} ({alert.department})", MetaColor, new Font("Segoe UI", 8.25f), 17);
             var from = MakeLine($"De : {alert.sender}", MetaColor, new Font("Segoe UI", 8.25f), 17);
@@ -288,13 +288,13 @@ namespace MailDetectorAgent
             }
         }
 
-        private void OpenDetailPage(int mailId)
+        private void OpenDetailPage(string trackingId)
         {
             try
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = $"{_apiBase}/imap-mail/{mailId}",
+                    FileName = $"{_apiBase}/imap-mail/{trackingId}",
                     UseShellExecute = true,
                 });
             }

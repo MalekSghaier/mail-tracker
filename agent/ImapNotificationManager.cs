@@ -13,12 +13,11 @@ namespace MailDetectorAgent
         private static ImapNotificationForm? _singleForm;
         private static BadgeForm? _badgeForm;
         private static ImapNotificationCenterForm? _centerForm;
-        private static Func<int, Task>? _ackCallback;
-        private static Func<int, bool, Task>? _reminderCallback;
+        private static Func<string, Task>? _ackCallback;
+        private static Func<string, bool, Task>? _reminderCallback;
         private static string _apiBase = "http://localhost:8000";
 
-        public static void Configure(Func<int, Task> ackCallback, Func<int, bool, Task> reminderCallback, string apiBase)
-        {
+        public static void Configure(Func<string, Task> ackCallback, Func<string, bool, Task> reminderCallback, string apiBase)        {
             _ackCallback = ackCallback;
             _reminderCallback = reminderCallback;
             _apiBase = apiBase;
@@ -32,7 +31,7 @@ namespace MailDetectorAgent
             _reminderStatus[key] = done;
             if (_pending.TryGetValue(key, out var alert))
             {
-                _ = _reminderCallback?.Invoke(alert.id, done);
+                _ = _reminderCallback?.Invoke(alert.tracking_id, done);
             }
         }
 
@@ -107,7 +106,7 @@ namespace MailDetectorAgent
             if (_pending.TryGetValue(key, out var alert))
             {
                 _pending.Remove(key);
-                _ = _ackCallback?.Invoke(alert.id);
+                _ = _ackCallback?.Invoke(alert.tracking_id);
             }
             _reminderStatus.Remove(key);
             _minimizedSet.Remove(key);
