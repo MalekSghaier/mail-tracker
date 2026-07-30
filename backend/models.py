@@ -51,6 +51,7 @@ class ReceivedMailLog(Base):
     __tablename__ = "received_mail_log"
 
     id = Column(Integer, primary_key=True)
+    tracking_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
     imap_account_id = Column(Integer, ForeignKey("imap_accounts.id", ondelete="CASCADE"), nullable=False)
     message_uid = Column(String, nullable=False)
     sender_email = Column(String, nullable=True)

@@ -15,7 +15,7 @@ namespace MailDetectorAgent
 
     public class ImapAlertDto
     {
-        public int id { get; set; }
+        public string tracking_id { get; set; } = "";
         public string account_label { get; set; } = "";
         public string account_email { get; set; } = "";
         public string employee_username { get; set; } = "";
@@ -25,6 +25,6 @@ namespace MailDetectorAgent
         public string received_at { get; set; } = "";
         public bool? reminder_done { get; set; } = null;
         public string category { get; set; } = "pending";
-        public string Key => id.ToString();
+        public string Key => tracking_id;
     }
 }

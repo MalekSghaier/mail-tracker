@@ -612,21 +612,21 @@ def _apply_imap_role_filter(query, user: dict):
 
     return query.filter(False)
 
-def _own_imap_mail_query(db, user, mail_id: int | None = None):
+def _own_imap_mail_query(db, user, tracking_id: str | None = None):
     query = (
         db.query(ReceivedMailLog, ImapAccount, AppUser)
         .join(ImapAccount, ReceivedMailLog.imap_account_id == ImapAccount.id)
         .join(AppUser, ImapAccount.app_user_id == AppUser.id)
     )
     query = _apply_imap_role_filter(query, user)
-    if mail_id is not None:
-        query = query.filter(ReceivedMailLog.id == mail_id)
+    if tracking_id is not None:
+        query = query.filter(ReceivedMailLog.tracking_id == uuid_lib.UUID(tracking_id))
     return query
 
 
 def _serialize_imap_alert(mail, account, app_user, category):
     return {
-        "id": mail.id,
+        "tracking_id": str(mail.tracking_id),
         "account_label": account.label,
         "account_email": account.email,
         "employee_username": app_user.username,
@@ -674,11 +674,11 @@ def get_own_imap_alerts(user=Depends(get_current_user)):
 
     return results
 
-@app.post("/api/imap-alerts/{mail_id}/ack")
-def ack_imap_alert(mail_id: int, user=Depends(get_current_user)):
+@app.post("/api/imap-alerts/{tracking_id}/ack")
+def ack_imap_alert(tracking_id: str, user=Depends(get_current_user)):
     _require_supervisor(user)
     with get_db() as db:
-        row = _own_imap_mail_query(db, user, mail_id).first()
+        row = _own_imap_mail_query(db, user, tracking_id).first()
         if row:
             row[0].supervisor_acked = True
     return {"ok": True}
@@ -688,11 +688,11 @@ class ImapReminderAnswer(BaseModel):
     done: bool
 
 
-@app.post("/api/imap-alerts/{mail_id}/reminder")
-def set_imap_reminder(mail_id: int, payload: ImapReminderAnswer, user=Depends(get_current_user)):
+@app.post("/api/imap-alerts/{tracking_id}/reminder")
+def set_imap_reminder(tracking_id: str, payload: ImapReminderAnswer, user=Depends(get_current_user)):
     _require_supervisor(user)
     with get_db() as db:
-        row = _own_imap_mail_query(db, user, mail_id).first()
+        row = _own_imap_mail_query(db, user, tracking_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Mail introuvable")
         mail = row[0]
@@ -707,10 +707,10 @@ def set_imap_reminder(mail_id: int, payload: ImapReminderAnswer, user=Depends(ge
     return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
 
 
-@app.get("/api/imap-alerts/{mail_id}/status")
-def get_imap_alert_status(mail_id: int, user=Depends(get_current_user)):
+@app.get("/api/imap-alerts/{tracking_id}/status")
+def get_imap_alert_status(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        row = _own_imap_mail_query(db, user, mail_id).first()
+        row = _own_imap_mail_query(db, user, tracking_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Mail introuvable")
         mail = row[0]
@@ -720,10 +720,10 @@ def get_imap_alert_status(mail_id: int, user=Depends(get_current_user)):
         "is_seen": mail.is_seen,
     }
 
-@app.post("/api/imap-alerts/{mail_id}/finally-done")
-def imap_finally_done(mail_id: int, user=Depends(get_current_user)):
+@app.post("/api/imap-alerts/{tracking_id}/finally-done")
+def imap_finally_done(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        row = _own_imap_mail_query(db, user, mail_id).first()
+        row = _own_imap_mail_query(db, user, tracking_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Mail introuvable")
         mail = row[0]
@@ -757,7 +757,7 @@ def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: in
 
         result = [
             {
-                "id": mail.id, "employee_username": app_user.username, "department": app_user.department,
+                "tracking_id": str(mail.tracking_id), "employee_username": app_user.username, "department": app_user.department,
                 "sender": mail.sender_email or "", "subject": mail.subject or "",
                 "received_at": str(mail.received_at) if mail.received_at else "",
                 "is_seen": mail.is_seen, "supervisor_acked": mail.supervisor_acked,
@@ -769,11 +769,11 @@ def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: in
     return {"total": total, "limit": limit, "offset": offset, "items": result}
 
 
-@app.get("/api/imap-mail/{mail_id}")
-def get_imap_mail_json(mail_id: int, user=Depends(get_current_user)):
+@app.get("/api/imap-mail/{tracking_id}")
+def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
     _require_supervisor(user)
     with get_db() as db:
-        row = _own_imap_mail_query(db, user, mail_id).first()
+        row = _own_imap_mail_query(db, user, tracking_id).first()
         if not row:
             raise HTTPException(status_code=404, detail="Mail introuvable")
         mail, account, app_user = row
@@ -784,7 +784,7 @@ def get_imap_mail_json(mail_id: int, user=Depends(get_current_user)):
         )
 
         mail_data = {
-            "id": mail.id, "employee_username": app_user.username, "department": app_user.department,
+            "tracking_id": str(mail.tracking_id), "employee_username": app_user.username, "department": app_user.department,
             "sender": mail.sender_email or "", "subject": mail.subject or "",
             "received_at": str(mail.received_at) if mail.received_at else "",
             "is_seen": mail.is_seen, "supervisor_acked": mail.supervisor_acked,
@@ -793,7 +793,7 @@ def get_imap_mail_json(mail_id: int, user=Depends(get_current_user)):
         }
         history_data = [
             {
-                "id": h.id, "employee_username": u.username, "sender": h.sender_email or "",
+                "tracking_id": str(h.tracking_id), "employee_username": u.username, "sender": h.sender_email or "",
                 "subject": h.subject or "", "received_at": str(h.received_at) if h.received_at else "",
                 "is_seen": h.is_seen, "reminder_done": h.reminder_done,
             }
@@ -801,8 +801,8 @@ def get_imap_mail_json(mail_id: int, user=Depends(get_current_user)):
         ]
     return {"mail": mail_data, "history": history_data}
 
-@app.get("/imap-mail/{mail_id}", response_class=HTMLResponse)
-def imap_mail_detail_page(mail_id: int):
+@app.get("/imap-mail/{tracking_id}", response_class=HTMLResponse)
+def imap_mail_detail_page(tracking_id: str):
     return HTMLResponse(content=f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -892,7 +892,7 @@ def imap_mail_detail_page(mail_id: int):
   </div>
 </main>
 <script>
-const mid = {mail_id};
+const mid = '{tracking_id}';
 let token = localStorage.getItem('user_token') || null;
 function escapeHtml(s) {{ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }}
 function fmtDate(d) {{ return d ? String(d).slice(0,16).replace('T',' ') : '—'; }}
@@ -946,11 +946,13 @@ function renderMail(mail, history) {{
   document.getElementById('mail-status-row').innerHTML = statusBadge(mail.is_seen, mail.supervisor_acked, mail.reminder_done);
   document.getElementById('reminder-section').innerHTML = renderReminder(mail.reminder_done, mail.reminder_answered_at);
   document.getElementById('history-label').textContent = `Mails non lus du département (${{history.length}})`;
-  document.getElementById('history-tbody').innerHTML = history.map(h => `
-    <tr class="${{h.id===mid?'row-current':''}}" onclick="window.location='/imap-mail/${{h.id}}'">
-      <td>${{escapeHtml(h.employee_username)}}</td><td>${{escapeHtml(h.sender)}}</td>
-      <td>${{escapeHtml(h.subject)}}</td><td>${{fmtDate(h.received_at)}}</td>
-      <td>${{statusBadge(h.is_seen, false, h.reminder_done)}}</td></tr>`).join('');
+  document.getElementById('history-tbody').innerHTML = history.map(h => {{
+      const isCurrent = h.tracking_id === mid ? 'row-current' : '';
+      return `<tr class="${{isCurrent}}" onclick="window.location='/imap-mail/${{h.tracking_id}}'">
+        <td>${{escapeHtml(h.employee_username)}}</td><td>${{escapeHtml(h.sender)}}</td>
+        <td>${{escapeHtml(h.subject)}}</td><td>${{fmtDate(h.received_at)}}</td>
+        <td>${{statusBadge(h.is_seen, false, h.reminder_done)}}</td></tr>`;
+  }}).join('');
 }}
 async function loadMail() {{
   try {{

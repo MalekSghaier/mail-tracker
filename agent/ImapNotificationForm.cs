@@ -49,7 +49,7 @@ namespace MailDetectorAgent
             _onAnswer = onAnswer;
             _onUserDismiss = onUserDismiss;
             _onMinimize = onMinimize;
-            _detailUrl = $"{apiBase}/imap-mail/{alert.id}";
+            _detailUrl = $"{apiBase}/imap-mail/{alert.tracking_id}";
             Key = alert.Key;
 
             int metaLines = 3; // employé (département), expéditeur, sujet
