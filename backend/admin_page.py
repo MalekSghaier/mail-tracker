@@ -644,7 +644,7 @@ async function loadStats() {
       </div>
       <div class="stat-card">
         <div class="stat-value">${s.emails.total}</div>
-        <div class="stat-label">Mails suivis</div>
+        <div class="stat-label">Employés surveillés</div>
       </div>
       <div class="stat-card blue">
         <div class="stat-value">${s.emails.opened}</div>

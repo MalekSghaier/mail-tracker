@@ -456,16 +456,30 @@ def get_admin_stats(admin=Depends(get_current_admin)):
         active_users = db.query(AppUser).filter(AppUser.is_active.is_(True)).count()
         inactive_users = db.query(AppUser).filter(AppUser.is_active.is_(False)).count()
 
-        total_emails = db.query(EmailLog).count()
-        opened_emails = db.query(EmailLog).filter(EmailLog.opened_at.isnot(None)).count()
-        reminder_done = db.query(EmailLog).filter(EmailLog.reminder_done.is_(True)).count()
-        reminder_not_done = db.query(EmailLog).filter(EmailLog.reminder_done.is_(False)).count()
+        # "Mails suivis" = nombre d'employés dont la boîte est surveillée
+        # (comptes IMAP actifs rattachés à un employee, pas un superviseur).
+        monitored_employees = (
+            db.query(ImapAccount)
+            .join(AppUser, ImapAccount.app_user_id == AppUser.id)
+            .filter(
+                ImapAccount.is_active.is_(True),
+                AppUser.account_role == "employee",
+            )
+            .count()
+        )
+
+        total_received = db.query(ReceivedMailLog).count()
+        opened_received = db.query(ReceivedMailLog).filter(ReceivedMailLog.is_seen.is_(True)).count()
+        reminder_done = db.query(ReceivedMailLog).filter(ReceivedMailLog.reminder_done.is_(True)).count()
+        reminder_not_done = db.query(ReceivedMailLog).filter(ReceivedMailLog.reminder_done.is_(False)).count()
 
     return {
         "users": {"total": total_users, "active": active_users, "inactive": inactive_users},
         "emails": {
-            "total": total_emails, "opened": opened_emails,
-            "reminder_done": reminder_done, "reminder_not_done": reminder_not_done,
+            "total": monitored_employees,
+            "opened": opened_received,
+            "reminder_done": reminder_done,
+            "reminder_not_done": reminder_not_done,
         },
     }
 
