@@ -216,56 +216,71 @@ def admin_page():
   .stat-card.red .stat-value { color: var(--red); }
   .stat-card.blue .stat-value { color: var(--blue); }
 
-  /* ---- add user form ---- */
-  .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-  .form-row > div { flex: 1; min-width: 150px; }
-  .form-row label {
+/* ---- add user form ---- */
+  .form-section { margin-bottom: 22px; }
+  .form-section:last-of-type { margin-bottom: 0; }
+  .form-section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    color: var(--gold); text-transform: uppercase;
+    margin-bottom: 14px; opacity: .85;
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+  .form-field { display: flex; flex-direction: column; }
+  .form-field label {
     display: block; font-size: 11.5px; font-weight: 600;
     color: var(--meta); margin-bottom: 7px;
   }
-  .form-row input {
+  .form-field input, .form-field select {
     width: 100%;
     background: var(--surface);
     border: 1.5px solid var(--border);
     border-radius: 10px;
-    padding: 10px 13px;
+    padding: 11px 14px;
     color: var(--text);
     font-size: 13.5px;
     font-family: inherit;
     transition: border-color .15s, box-shadow .15s;
+    height: 42px;
   }
-  .form-row input:focus {
+  .form-field select { cursor: pointer; }
+  .form-field input:focus, .form-field select:focus {
     outline: none;
     border-color: var(--gold-dim);
     box-shadow: 0 0 0 3px rgba(212,175,90,.15);
   }
-  .form-row select {
-    width: 100%;
-    background: var(--surface);
-    border: 1.5px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 13px;
-    color: var(--text);
-    font-size: 13.5px;
-    font-family: inherit;
-    transition: border-color .15s, box-shadow .15s;
-    cursor: pointer;
+  .form-field-hint {
+    font-size: 11px; color: var(--meta); margin-top: 8px; line-height: 1.4;
   }
-  .form-row select:focus {
-    outline: none;
-    border-color: var(--gold-dim);
-    box-shadow: 0 0 0 3px rgba(212,175,90,.15);
+  .password-input-wrap { position: relative; }
+  .password-input-wrap input { padding-right: 42px; }
+  .password-toggle {
+    position: absolute;
+    right: 10px; top: 50%; transform: translateY(-50%);
+    cursor: pointer; color: var(--meta); font-size: 15px;
+    background: none; border: none; padding: 4px;
+    display: flex; align-items: center; justify-content: center;
+    line-height: 1;
   }
-  #add-user-btn { padding: 10px 24px; white-space: nowrap; }
+  .password-toggle:hover { color: var(--gold); }
+  .form-divider { height: 1px; background: var(--border); margin: 22px 0; }
+  .form-footer {
+    display: flex; justify-content: flex-end; margin-top: 22px;
+  }
+  #add-user-btn { padding: 11px 36px; white-space: nowrap; width: auto; }
   .msg-ok, .msg-err { font-size: 12.5px; margin-top: 12px; display: none; }
   .msg-ok { color: var(--green); }
   .msg-err { color: var(--red); }
 
-  /* ---- table ---- */
-  .table-scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
+
+/* ---- table ---- */
+  .table-scroll { width: 100%; }
+  table { width: 100%; table-layout: auto; border-collapse: collapse; font-size: 13px; }
   thead th {
-    text-align: left; padding: 12px 16px;
+    text-align: left; padding: 12px 14px;
     font-size: 10px; font-weight: 700; letter-spacing: .1em;
     text-transform: uppercase; color: var(--meta);
     border-bottom: 1px solid var(--border);
@@ -275,7 +290,8 @@ def admin_page():
   tbody tr:last-child { border-bottom: none; }
   tbody tr.row-inactive { opacity: .45; }
   tbody tr.row-inactive .username-cell { text-decoration: line-through; text-decoration-color: var(--meta); }
-  td { padding: 13px 16px; vertical-align: middle; white-space: nowrap; }
+  td { padding: 13px 14px; vertical-align: middle; white-space: normal; word-break: break-word; }
+  td.username-cell { white-space: nowrap; }
   .username-cell { font-weight: 600; }
   .badge-active { color: var(--green); font-size: 12px; font-weight: 600; white-space: nowrap; }
   .badge-inactive { color: var(--meta); font-size: 12px; white-space: nowrap; }
@@ -397,46 +413,67 @@ def admin_page():
     <div class="stats-row" id="stats-row">
       <!-- rempli en JS -->
     </div>
-
-    <div class="section-label">Ajouter un utilisateur</div>
+<div class="section-label">Ajouter un utilisateur</div>
     <div class="card">
-      <div class="form-row">
-        <div>
-          <label>Nom d'utilisateur</label>
-          <input id="new-username" type="text">
-        </div>
-        <div>
-          <label>Email à surveiller</label>
-          <input id="new-email" type="email" required>
-        </div>
-        <div>
-          <label>Mot de passe</label>
-          <input id="new-password" type="password">
-        </div>
-        <div>
-          <label>Mot de passe de la boîte mail</label>
-          <input id="new-imap-password" type="password">
-        </div>
-        <div>
-          <label>Département</label>
-          <input id="new-department" type="text" placeholder="ex: IT, RH, Finance">
-        </div>
-        <div>
-          <label>Rôle</label>
-          <select id="new-role">
-            <option value="employee">Employé</option>
-            <option value="dept_admin">Chef de département</option>
-            <option value="superadmin">Super admin (voit tout)</option>
-          </select>
-          <div id="role-hint" style="font-size:11.5px;color:var(--meta);margin-top:6px;">
-            Un chef de département verra les alertes de tous les employés du même département.
+
+      <div class="form-section">
+        <div class="form-section-title">Identité</div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Nom d'utilisateur</label>
+            <input id="new-username" type="text">
+          </div>
+          <div class="form-field">
+            <label>Email à surveiller</label>
+            <input id="new-email" type="email" required>
+          </div>
+          <div class="form-field">
+            <label>Département</label>
+            <input id="new-department" type="text" placeholder="ex: IT, RH, Finance">
           </div>
         </div>
+      </div>
+
+      <div class="form-divider"></div>
+
+      <div class="form-section">
+        <div class="form-section-title">Accès</div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Mot de passe (agent)</label>
+            <div class="password-input-wrap">
+              <input id="new-password" type="password">
+              <button type="button" class="password-toggle" onclick="togglePassword('new-password', this)">👁</button>
+            </div>
+          </div>
+          <div class="form-field">
+            <label>Mot de passe de la boîte mail</label>
+            <div class="password-input-wrap">
+              <input id="new-imap-password" type="password">
+              <button type="button" class="password-toggle" onclick="togglePassword('new-imap-password', this)">👁</button>
+            </div>
+          </div>
+          <div class="form-field">
+            <label>Rôle</label>
+            <select id="new-role">
+              <option value="employee">Employé</option>
+              <option value="dept_admin">Chef de département</option>
+              <option value="superadmin">Super admin (voit tout)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-field-hint" id="role-hint">
+          Un chef de département verra les alertes de tous les employés du même département.
+        </div>
+      </div>
+
+      <div class="form-footer">
         <button class="btn btn-primary" id="add-user-btn" onclick="addUser()">
           <span class="btn-label">Ajouter</span>
           <span class="spinner"></span>
         </button>
       </div>
+
       <div class="msg-ok" id="add-ok">Utilisateur créé, boîte mail surveillée.</div>
       <div class="msg-err" id="add-err"></div>
     </div>
@@ -516,6 +553,13 @@ function showLogin() {
 function setButtonLoading(btn, loading) {
   btn.classList.toggle('loading', loading);
   btn.disabled = loading;
+}
+
+function togglePassword(inputId, btn) {
+  const input = document.getElementById(inputId);
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  btn.textContent = isHidden ? '🙈' : '👁';
 }
 
 async function doLogin() {
