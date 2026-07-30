@@ -582,9 +582,6 @@ def delete_excluded_pattern(pattern_id: int, admin=Depends(get_current_admin)):
 
 
 def _apply_imap_role_filter(query, user: dict):
-    """Équivalent de _apply_role_filter, mais pour les alertes de mails REÇUS.
-    Un dept_admin/superadmin ne voit que les employés (role='employee'),
-    jamais ses propres mails ni ceux d'un autre superviseur."""
     account_role = user.get("account_role", "employee")
 
     if account_role == "superadmin":
@@ -599,46 +596,376 @@ def _apply_imap_role_filter(query, user: dict):
             AppUser.account_role == "employee",
         )
 
-    # un employé normal ne voit jamais les alertes des autres
     return query.filter(False)
 
+def _own_imap_mail_query(db, user, mail_id: int | None = None):
+    query = (
+        db.query(ReceivedMailLog, ImapAccount, AppUser)
+        .join(ImapAccount, ReceivedMailLog.imap_account_id == ImapAccount.id)
+        .join(AppUser, ImapAccount.app_user_id == AppUser.id)
+    )
+    query = _apply_imap_role_filter(query, user)
+    if mail_id is not None:
+        query = query.filter(ReceivedMailLog.id == mail_id)
+    return query
 
-@app.get("/api/imap-alerts")
-def get_own_imap_alerts(user=Depends(get_current_user)):
+
+def _serialize_imap_alert(mail, account, app_user, category):
+    return {
+        "id": mail.id,
+        "account_label": account.label,
+        "account_email": account.email,
+        "employee_username": app_user.username,
+        "department": app_user.department,
+        "sender": mail.sender_email or "",
+        "subject": mail.subject or "",
+        "received_at": str(mail.received_at) if mail.received_at else "",
+        "reminder_done": mail.reminder_done,
+        "category": category,
+    }
+
+
+def _require_supervisor(user: dict):
     account_role = user.get("account_role", "employee")
     if account_role not in ("dept_admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Réservé aux chefs de département et super admin")
 
+
+@app.get("/api/imap-alerts")
+def get_own_imap_alerts(user=Depends(get_current_user)):
+    _require_supervisor(user)
+
     with get_db() as db:
         cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
 
-        query = (
-            db.query(ReceivedMailLog, ImapAccount, AppUser)
-            .join(ImapAccount, ReceivedMailLog.imap_account_id == ImapAccount.id)
-            .join(AppUser, ImapAccount.app_user_id == AppUser.id)
-            .filter(
-                ReceivedMailLog.is_seen.is_(False),
-                ReceivedMailLog.received_at.isnot(None),
-                ReceivedMailLog.received_at < cutoff,
-            )
+        pending_q = _own_imap_mail_query(db, user).filter(
+            ReceivedMailLog.is_seen.is_(False),
+            ReceivedMailLog.supervisor_acked.is_(False),
+            ReceivedMailLog.reminder_done.is_(None),
+            ReceivedMailLog.received_at.isnot(None),
+            ReceivedMailLog.received_at < cutoff,
         )
-        query = _apply_imap_role_filter(query, user)
-        rows = query.order_by(ReceivedMailLog.received_at.asc()).all()
-
         results = [
+            _serialize_imap_alert(mail, account, app_user, "pending")
+            for mail, account, app_user in pending_q.order_by(ReceivedMailLog.received_at.asc()).all()
+        ]
+
+        seen_q = _own_imap_mail_query(db, user).filter(
+            ReceivedMailLog.supervisor_acked.is_(True),
+            ReceivedMailLog.reminder_done.is_(None),
+            ReceivedMailLog.is_seen.is_(False),
+        )
+        for mail, account, app_user in seen_q.order_by(ReceivedMailLog.received_at.asc()).all():
+            results.append(_serialize_imap_alert(mail, account, app_user, "seen_no_answer"))
+
+    return results
+
+@app.post("/api/imap-alerts/{mail_id}/ack")
+def ack_imap_alert(mail_id: int, user=Depends(get_current_user)):
+    _require_supervisor(user)
+    with get_db() as db:
+        row = _own_imap_mail_query(db, user, mail_id).first()
+        if row:
+            row[0].supervisor_acked = True
+    return {"ok": True}
+
+
+class ImapReminderAnswer(BaseModel):
+    done: bool
+
+
+@app.post("/api/imap-alerts/{mail_id}/reminder")
+def set_imap_reminder(mail_id: int, payload: ImapReminderAnswer, user=Depends(get_current_user)):
+    _require_supervisor(user)
+    with get_db() as db:
+        row = _own_imap_mail_query(db, user, mail_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+        mail = row[0]
+        if payload.done:
+            mail.reminder_done = True
+            mail.reminder_answered_at = datetime.now()
+            mail.reminder_recheck_at = None
+        else:
+            mail.reminder_done = False
+            mail.reminder_answered_at = datetime.now()
+            mail.reminder_recheck_at = datetime.now() + timedelta(minutes=RECHECK_MINUTES)
+    return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
+
+
+@app.get("/api/imap-alerts/{mail_id}/status")
+def get_imap_alert_status(mail_id: int, user=Depends(get_current_user)):
+    with get_db() as db:
+        row = _own_imap_mail_query(db, user, mail_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+        mail = row[0]
+    return {
+        "reminder_done": mail.reminder_done,
+        "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
+        "is_seen": mail.is_seen,
+    }
+
+@app.post("/api/imap-alerts/{mail_id}/finally-done")
+def imap_finally_done(mail_id: int, user=Depends(get_current_user)):
+    with get_db() as db:
+        row = _own_imap_mail_query(db, user, mail_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+        mail = row[0]
+        mail.reminder_done = True
+        mail.reminder_answered_at = datetime.now()
+        mail.reminder_recheck_at = None
+    return {"ok": True}
+
+def _imap_history_sort_key(row):
+    mail = row[0]
+    if mail.reminder_done is False:
+        priority = 1
+    elif mail.reminder_done is None and not mail.supervisor_acked:
+        priority = 2
+    elif mail.reminder_done is None and mail.supervisor_acked:
+        priority = 3
+    elif mail.reminder_done is True:
+        priority = 5
+    else:
+        priority = 6
+    return (priority, -(mail.received_at.timestamp() if mail.received_at else 0))
+
+@app.get("/api/imap-history")
+def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0):
+    _require_supervisor(user)
+    with get_db() as db:
+        query = _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False))
+        rows = sorted(query.all(), key=_imap_history_sort_key)
+        total = len(rows)
+        rows = rows[offset:offset + limit]
+
+        result = [
             {
-                "account_label": account.label,
-                "account_email": account.email,
-                "employee_username": app_user.username,
-                "department": app_user.department,
-                "sender": mail.sender_email or "",
-                "subject": mail.subject or "",
+                "id": mail.id, "employee_username": app_user.username, "department": app_user.department,
+                "sender": mail.sender_email or "", "subject": mail.subject or "",
                 "received_at": str(mail.received_at) if mail.received_at else "",
+                "is_seen": mail.is_seen, "supervisor_acked": mail.supervisor_acked,
+                "reminder_done": mail.reminder_done,
+                "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
             }
             for mail, account, app_user in rows
         ]
+    return {"total": total, "limit": limit, "offset": offset, "items": result}
 
-    return results
+
+@app.get("/api/imap-mail/{mail_id}")
+def get_imap_mail_json(mail_id: int, user=Depends(get_current_user)):
+    _require_supervisor(user)
+    with get_db() as db:
+        row = _own_imap_mail_query(db, user, mail_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+        mail, account, app_user = row
+
+        history_rows = sorted(
+            _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False)).all(),
+            key=_imap_history_sort_key,
+        )
+
+        mail_data = {
+            "id": mail.id, "employee_username": app_user.username, "department": app_user.department,
+            "sender": mail.sender_email or "", "subject": mail.subject or "",
+            "received_at": str(mail.received_at) if mail.received_at else "",
+            "is_seen": mail.is_seen, "supervisor_acked": mail.supervisor_acked,
+            "reminder_done": mail.reminder_done,
+            "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
+        }
+        history_data = [
+            {
+                "id": h.id, "employee_username": u.username, "sender": h.sender_email or "",
+                "subject": h.subject or "", "received_at": str(h.received_at) if h.received_at else "",
+                "is_seen": h.is_seen, "reminder_done": h.reminder_done,
+            }
+            for h, a, u in history_rows
+        ]
+    return {"mail": mail_data, "history": history_data}
+
+@app.get("/imap-mail/{mail_id}", response_class=HTMLResponse)
+def imap_mail_detail_page(mail_id: int):
+    return HTMLResponse(content=f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Mail Detector — Mail reçu</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {{
+    --bg:#0e0e14; --surface:#17171f; --card:#1e1e28; --border:#2a2a38;
+    --gold:#d4af5a; --gold-dim:#a07c30; --text:#e8e8f0; --meta:#8888a0;
+    --green:#48b280; --red:#d46060; --amber:#e8a040;
+  }}
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ background:var(--bg); color:var(--text); font-family:'Inter',sans-serif; font-size:14px; }}
+  .header {{ border-bottom:1px solid var(--border); padding:18px 40px; display:flex; align-items:center; gap:12px; }}
+  .header-logo {{ width:32px; height:32px; background:linear-gradient(135deg,var(--gold),var(--gold-dim)); border-radius:8px; display:flex; align-items:center; justify-content:center; }}
+  .container {{ max-width:1000px; margin:0 auto; padding:40px; }}
+  #login-view {{ max-width:380px; margin:8vh auto 0; }}
+  .login-card {{ background:var(--card); border:1px solid var(--border); border-radius:20px; padding:40px 36px; }}
+  .field {{ margin-bottom:18px; }}
+  .field label {{ display:block; font-size:11.5px; color:var(--meta); margin-bottom:7px; }}
+  .field input {{ width:100%; background:var(--surface); border:1.5px solid var(--border); border-radius:10px; padding:11px 14px; color:var(--text); font-family:inherit; }}
+  .btn {{ font-family:inherit; cursor:pointer; border:none; border-radius:30px; font-weight:600; font-size:13.5px; }}
+  .btn-primary {{ background:linear-gradient(135deg,var(--gold),var(--gold-dim)); color:#17171a; padding:12px 20px; width:100%; }}
+  .error-msg {{ color:var(--red); font-size:12.5px; margin-top:14px; text-align:center; display:none; }}
+  .section-label {{ font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); margin-bottom:16px; display:flex; gap:8px; }}
+  .section-label::after {{ content:''; flex:1; height:1px; background:var(--border); }}
+  .mail-card {{ background:var(--card); border:1px solid var(--border); border-radius:16px; overflow:hidden; margin-bottom:48px; }}
+  .mail-card-header {{ padding:28px 32px 24px; border-bottom:1px solid var(--border); display:flex; gap:24px; }}
+  .mail-accent-bar {{ width:4px; border-radius:4px; background:linear-gradient(to bottom,var(--gold),var(--gold-dim)); align-self:stretch; }}
+  .mail-subject {{ font-size:20px; font-weight:600; margin-bottom:16px; }}
+  .mail-field {{ display:flex; gap:8px; font-size:13px; margin-bottom:6px; }}
+  .mail-field-key {{ color:var(--meta); width:100px; flex-shrink:0; }}
+  .mail-status-row {{ padding:16px 32px; background:var(--surface); border-top:1px solid var(--border); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }}
+  .badge {{ display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:600; }}
+  .badge::before {{ content:'●'; font-size:8px; }}
+  .badge-yes {{ background:rgba(72,178,128,.15); color:var(--green); }}
+  .badge-no {{ background:rgba(212,96,96,.15); color:var(--red); }}
+  .badge-acked {{ background:rgba(136,136,160,.12); color:var(--meta); }}
+  .badge-pending {{ background:rgba(232,160,64,.15); color:var(--amber); }}
+  .mail-reminder-section {{ padding:20px 32px 24px; display:flex; align-items:center; gap:20px; border-top:1px solid var(--border); flex-wrap:wrap; }}
+  .reminder-buttons {{ display:flex; gap:10px; }}
+  .btn-reminder {{ display:inline-flex; align-items:center; gap:7px; padding:8px 20px; border:none; border-radius:30px; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }}
+  .btn-oui {{ background:rgba(72,178,128,.18); color:var(--green); border:1px solid rgba(72,178,128,.35); }}
+  .btn-non {{ background:rgba(212,96,96,.15); color:var(--red); border:1px solid rgba(212,96,96,.3); }}
+  .reminder-done {{ display:flex; align-items:center; gap:10px; font-size:13px; font-weight:600; padding:8px 16px; border-radius:30px; }}
+  .reminder-yes {{ background:rgba(72,178,128,.12); color:var(--green); border:1px solid rgba(72,178,128,.25); }}
+  .reminder-no {{ background:rgba(212,96,96,.12); color:var(--red); border:1px solid rgba(212,96,96,.25); }}
+  .btn-finally-done {{ display:inline-flex; align-items:center; gap:8px; padding:9px 20px; background:rgba(212,175,90,.12); color:var(--gold); border:1px solid rgba(212,175,90,.3); border-radius:30px; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }}
+  .recheck-notice {{ font-size:12px; color:var(--amber); }}
+  .history-table-wrap {{ background:var(--card); border:1px solid var(--border); border-radius:16px; overflow:hidden; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  thead {{ background:var(--surface); border-bottom:1px solid var(--border); }}
+  thead th {{ padding:12px 20px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; color:var(--meta); }}
+  tbody tr {{ border-bottom:1px solid var(--border); cursor:pointer; }}
+  tbody tr:hover {{ background:rgba(255,255,255,.03); }}
+  tbody tr.row-current td {{ color:var(--gold); font-weight:600; }}
+  td {{ padding:14px 20px; }}
+</style>
+</head>
+<body>
+<header class="header"><div class="header-logo">✉</div><span>Mail Detector — Mails reçus</span></header>
+<main class="container">
+  <div id="loading-view" style="text-align:center;padding:60px 0;color:var(--meta);">Chargement…</div>
+  <div id="login-view" style="display:none;">
+    <div class="login-card">
+      <div class="field"><label>Nom d'utilisateur</label><input id="login-username" type="text"></div>
+      <div class="field"><label>Mot de passe</label><input id="login-password" type="password"></div>
+      <button class="btn btn-primary" onclick="doLogin()">Se connecter</button>
+      <div class="error-msg" id="login-error">Identifiants invalides.</div>
+    </div>
+  </div>
+  <div id="content-view" style="display:none;">
+    <div class="section-label">Mail reçu</div>
+    <div class="mail-card">
+      <div class="mail-card-header"><div class="mail-accent-bar"></div><div id="mail-meta"></div></div>
+      <div class="mail-status-row" id="mail-status-row"></div>
+      <div class="mail-reminder-section" id="reminder-section"></div>
+    </div>
+    <div class="section-label" id="history-label">Mails non lus du département</div>
+    <div class="history-table-wrap">
+      <table>
+        <thead><tr><th>Employé</th><th>Expéditeur</th><th>Sujet</th><th>Reçu</th><th>Statut</th></tr></thead>
+        <tbody id="history-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<script>
+const mid = {mail_id};
+let token = localStorage.getItem('user_token') || null;
+function escapeHtml(s) {{ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }}
+function fmtDate(d) {{ return d ? String(d).slice(0,16).replace('T',' ') : '—'; }}
+function statusBadge(is_seen, acked, reminder) {{
+  if (is_seen) return '<span class="badge badge-yes">Lu</span>';
+  if (reminder === true) return '<span class="badge badge-yes">Rappel fait</span>';
+  if (reminder === false) return '<span class="badge badge-no">Rappel non fait</span>';
+  if (acked) return '<span class="badge badge-acked">Vu — sans réponse</span>';
+  return '<span class="badge badge-pending">Non lu</span>';
+}}
+async function authFetch(url, options={{}}) {{
+  options.headers = Object.assign({{}}, options.headers, {{'Authorization':'Bearer '+token}});
+  const r = await fetch(url, options);
+  if (r.status===401||r.status===403) {{ token=null; localStorage.removeItem('user_token'); showLogin(); throw new Error('expiré'); }}
+  return r;
+}}
+function showLogin() {{
+  document.getElementById('loading-view').style.display='none';
+  document.getElementById('login-view').style.display='block';
+  document.getElementById('content-view').style.display='none';
+}}
+async function doLogin() {{
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  try {{
+    const r = await fetch('/api/auth/login', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{username,password}})}});
+    if (!r.ok) {{ errEl.style.display='block'; return; }}
+    const d = await r.json();
+    token = d.access_token;
+    localStorage.setItem('user_token', token);
+    loadMail();
+  }} catch(e) {{ errEl.textContent='Serveur injoignable.'; errEl.style.display='block'; }}
+}}
+function renderReminder(reminder_done, reminder_at) {{
+  const dt = fmtDate(reminder_at);
+  if (reminder_done === true) return `<div class="reminder-done reminder-yes">✓ Relance effectuée — ${{dt}}</div>`;
+  if (reminder_done === false) return `<div><div class="reminder-done reminder-no">✗ Relance non effectuée — ${{dt}}</div>
+    <button class="btn-finally-done" onclick="finallyDone()">✓ Relance finalement faite</button>
+    <div class="recheck-notice">↻ Nouvelle alerte automatique.</div></div>`;
+  return `<span>Avez-vous relancé l'employé ?</span><div class="reminder-buttons">
+    <button class="btn-reminder btn-oui" onclick="submitReminder(true)">✓ Oui</button>
+    <button class="btn-reminder btn-non" onclick="submitReminder(false)">✗ Non</button></div>`;
+}}
+function renderMail(mail, history) {{
+  document.getElementById('mail-meta').innerHTML = `
+    <div class="mail-subject">${{escapeHtml(mail.subject || '—')}}</div>
+    <div class="mail-field"><span class="mail-field-key">Employé</span>${{escapeHtml(mail.employee_username)}} (${{escapeHtml(mail.department||'')}})</div>
+    <div class="mail-field"><span class="mail-field-key">De</span>${{escapeHtml(mail.sender)}}</div>
+    <div class="mail-field"><span class="mail-field-key">Reçu</span>${{fmtDate(mail.received_at)}}</div>`;
+  document.getElementById('mail-status-row').innerHTML = statusBadge(mail.is_seen, mail.supervisor_acked, mail.reminder_done);
+  document.getElementById('reminder-section').innerHTML = renderReminder(mail.reminder_done, mail.reminder_answered_at);
+  document.getElementById('history-label').textContent = `Mails non lus du département (${{history.length}})`;
+  document.getElementById('history-tbody').innerHTML = history.map(h => `
+    <tr class="${{h.id===mid?'row-current':''}}" onclick="window.location='/imap-mail/${{h.id}}'">
+      <td>${{escapeHtml(h.employee_username)}}</td><td>${{escapeHtml(h.sender)}}</td>
+      <td>${{escapeHtml(h.subject)}}</td><td>${{fmtDate(h.received_at)}}</td>
+      <td>${{statusBadge(h.is_seen, false, h.reminder_done)}}</td></tr>`).join('');
+}}
+async function loadMail() {{
+  try {{
+    const r = await authFetch(`/api/imap-mail/${{mid}}`);
+    document.getElementById('loading-view').style.display='none';
+    if (!r.ok) {{
+      document.getElementById('content-view').innerHTML = '<h1>Mail introuvable ou accès refusé</h1>';
+      document.getElementById('content-view').style.display='block';
+      return;
+    }}
+    const data = await r.json();
+    renderMail(data.mail, data.history);
+    document.getElementById('login-view').style.display='none';
+    document.getElementById('content-view').style.display='block';
+  }} catch(e) {{}}
+}}
+async function submitReminder(done) {{
+  await authFetch(`/api/imap-alerts/${{mid}}/reminder`, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{done}})}});
+  await loadMail();
+}}
+async function finallyDone() {{
+  await authFetch(`/api/imap-alerts/${{mid}}/finally-done`, {{method:'POST'}});
+  await loadMail();
+}}
+if (token) loadMail(); else {{ document.getElementById('loading-view').style.display='none'; document.getElementById('login-view').style.display='block'; }}
+setInterval(() => {{ if (token) loadMail(); }}, 3000);
+</script>
+</body>
+</html>""")
 
 def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
     """Génère le bloc HTML du rappel selon l'état actuel."""

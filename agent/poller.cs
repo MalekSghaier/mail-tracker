@@ -20,7 +20,6 @@ namespace MailDetectorAgent
 
         public string ApiBase => _apiBase;
         public HttpClient HttpClient => _http;
-
         public Poller(NotifyIcon trayIcon)
         {
             _trayIcon = trayIcon;
@@ -29,14 +28,8 @@ namespace MailDetectorAgent
             NotificationManager.Configure(
                 async (trackingId) =>
                 {
-                    try
-                    {
-                        await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/ack", null);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error(ex, "[Poller] erreur ack");
-                    }
+                    try { await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/ack", null); }
+                    catch (Exception ex) { Log.Error(ex, "[Poller] erreur ack"); }
                 },
                 async (trackingId, done) =>
                 {
@@ -46,10 +39,25 @@ namespace MailDetectorAgent
                         var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
                         await _http.PostAsync($"{_apiBase}/api/alerts/{trackingId}/reminder", content);
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) { Log.Error(ex, "[Poller] erreur reminder"); }
+                },
+                _apiBase);
+
+            ImapNotificationManager.Configure(
+                async (mailId) =>
+                {
+                    try { await _http.PostAsync($"{_apiBase}/api/imap-alerts/{mailId}/ack", null); }
+                    catch (Exception ex) { Log.Error(ex, "[Poller] erreur imap ack"); }
+                },
+                async (mailId, done) =>
+                {
+                    try
                     {
-                        Log.Error(ex, "[Poller] erreur reminder");
+                        var json = JsonSerializer.Serialize(new { done });
+                        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                        await _http.PostAsync($"{_apiBase}/api/imap-alerts/{mailId}/reminder", content);
                     }
+                    catch (Exception ex) { Log.Error(ex, "[Poller] erreur imap reminder"); }
                 },
                 _apiBase);
         }
@@ -177,7 +185,7 @@ namespace MailDetectorAgent
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
                 if (imapAlerts == null) return;
-                ImapNotificationManager.AddAlerts(imapAlerts);
+                await ImapNotificationManager.AddAlertsAsync(imapAlerts);
             }
             catch (Exception ex)
             {

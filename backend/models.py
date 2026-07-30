@@ -47,6 +47,22 @@ class EmailLog(Base):
     reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
     reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
 
+class ReceivedMailLog(Base):
+    __tablename__ = "received_mail_log"
+
+    id = Column(Integer, primary_key=True)
+    imap_account_id = Column(Integer, ForeignKey("imap_accounts.id", ondelete="CASCADE"), nullable=False)
+    message_uid = Column(String, nullable=False)
+    sender_email = Column(String, nullable=True)
+    subject = Column(String, nullable=True)
+    received_at = Column(DateTime(timezone=False), nullable=True)
+    is_seen = Column(Boolean, default=False, nullable=False)
+    last_checked_at = Column(DateTime(timezone=False), server_default=func.now())
+    supervisor_acked = Column(Boolean, default=False, nullable=False)
+    reminder_done = Column(Boolean, nullable=True)
+    reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
+    reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
+
 
 
 class Session(Base):
@@ -74,19 +90,6 @@ class ImapAccount(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=False), server_default=func.now())
     app_user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True)
-
-
-class ReceivedMailLog(Base):
-    __tablename__ = "received_mail_log"
-
-    id = Column(Integer, primary_key=True)
-    imap_account_id = Column(Integer, ForeignKey("imap_accounts.id", ondelete="CASCADE"), nullable=False)
-    message_uid = Column(String, nullable=False)    
-    sender_email = Column(String, nullable=True)
-    subject = Column(String, nullable=True)
-    received_at = Column(DateTime(timezone=False), nullable=True)
-    is_seen = Column(Boolean, default=False, nullable=False)
-    last_checked_at = Column(DateTime(timezone=False), server_default=func.now())
 
 
 class ImapExcludedPattern(Base):

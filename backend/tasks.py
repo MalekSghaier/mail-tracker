@@ -30,6 +30,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.sync_all_imap_accounts",
         "schedule": 300.0,  # 5 minutes
     },
+    "reset-expired-imap-reminders-every-30s": {
+        "task": "tasks.reset_expired_imap_reminders",
+        "schedule": 30.0,
+    },
 }
 
 
@@ -98,3 +102,26 @@ def sync_account_task(self, account_id: int):
         sync_account(account_id)
     except Exception as exc:
         raise self.retry(exc=exc)
+
+
+@celery_app.task
+def reset_expired_imap_reminders():
+    from db import get_db
+    from models import ReceivedMailLog
+    from datetime import datetime
+
+    with get_db() as db:
+        db.query(ReceivedMailLog).filter(
+            ReceivedMailLog.reminder_done.is_(False),
+            ReceivedMailLog.reminder_recheck_at.isnot(None),
+            ReceivedMailLog.reminder_recheck_at < datetime.now(),
+        ).update(
+            {
+                ReceivedMailLog.supervisor_acked: False,
+                ReceivedMailLog.reminder_done: None,
+                ReceivedMailLog.reminder_answered_at: None,
+                ReceivedMailLog.reminder_recheck_at: None,
+            },
+            synchronize_session=False,
+        )
+    return {"ok": True}
