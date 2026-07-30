@@ -6,10 +6,10 @@ using System.Windows.Forms;
 namespace MailDetectorAgent
 {
     /// <summary>
-    /// Popup custom pour le scénario B (mail reçu non lu), même style que
-    /// NotificationForm (navy + accent doré). Pas de question Oui/Non
-    /// (pas de rappel côté mails reçus) — juste un statut "Non lu depuis".
-    /// Reste affiché jusqu'au clic sur la croix.
+    /// Popup custom pour le scénario B (mail reçu non lu), miroir exact de
+    /// NotificationForm : clic sur le titre ouvre la page détail, question
+    /// "Avez-vous relancé l'employé ?" avec Oui/Non, même logique de
+    /// persistance et de fermeture automatique après réponse.
     /// </summary>
     public sealed class ImapNotificationForm : Form
     {
@@ -18,7 +18,7 @@ namespace MailDetectorAgent
         private const int LineHeight = 18;
         private const int TitleHeight = 24;
         private const int TopRowHeight = 24;
-        private const int FooterHeight = 40;
+        private const int ReminderHeight = 60;
 
         private static readonly Color BgColor = Color.FromArgb(255, 26, 26, 34);
         private static readonly Color GoldAccent = Color.FromArgb(255, 212, 175, 90);
@@ -26,23 +26,34 @@ namespace MailDetectorAgent
         private static readonly Color MetaColor = Color.FromArgb(255, 150, 150, 162);
         private static readonly Color CloseIdle = Color.FromArgb(255, 120, 120, 130);
         private static readonly Color DividerColor = Color.FromArgb(255, 42, 42, 52);
-        private static readonly Color WarningColor = Color.FromArgb(255, 232, 160, 64);
+        private static readonly Color ValidatedColor = Color.FromArgb(255, 72, 178, 128);
+        private static readonly Color NotValidatedColor = Color.FromArgb(255, 212, 96, 96);
 
         private static int _openCount = 0;
         private readonly int _slot;
         private readonly System.Windows.Forms.Timer _fadeTimer;
-        private readonly Action _onDismiss;
+        private readonly Panel _reminderPanel;
+        private bool? _reminderStatus;
+        private readonly Action<bool> _onAnswer;
+        private readonly Action _onUserDismiss;
+        private readonly Action _onMinimize;
+        private readonly string _detailUrl;
 
         public string Key { get; }
 
-        public ImapNotificationForm(ImapAlertDto alert, Action onDismiss)
+        public ImapNotificationForm(ImapAlertDto alert, Action onUserDismiss, Action onMinimize,
+            bool? reminderStatus, Action<bool> onAnswer, string apiBase)
         {
             _slot = _openCount++;
-            _onDismiss = onDismiss;
+            _reminderStatus = reminderStatus;
+            _onAnswer = onAnswer;
+            _onUserDismiss = onUserDismiss;
+            _onMinimize = onMinimize;
+            _detailUrl = $"{apiBase}/imap-mail/{alert.id}";
             Key = alert.Key;
 
-            int metaLines = 3; // employé/département, expéditeur, sujet
-            int cardHeight = TopRowHeight + TitleHeight + (metaLines * LineHeight) + 1 + FooterHeight + 10;
+            int metaLines = 3; // employé (département), expéditeur, sujet
+            int cardHeight = TopRowHeight + TitleHeight + (metaLines * LineHeight) + 1 + ReminderHeight + 10;
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -55,6 +66,15 @@ namespace MailDetectorAgent
 
             ApplyRoundedRegion();
             PositionBottomRight();
+
+            _reminderPanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = ReminderHeight,
+                BackColor = BgColor,
+            };
+            BuildReminderContent();
+
             BuildLayout(alert);
 
             _fadeTimer = new System.Windows.Forms.Timer { Interval = 15 };
@@ -87,10 +107,124 @@ namespace MailDetectorAgent
             Location = new Point(x, Math.Max(y, 10));
         }
 
+        private void BuildReminderContent()
+        {
+            _reminderPanel.Controls.Clear();
+
+            if (_reminderStatus == null)
+            {
+                var question = new Label
+                {
+                    Text = "Avez-vous relancé l'employé ?",
+                    ForeColor = Color.FromArgb(255, 205, 205, 212),
+                    Font = new Font("Segoe UI", 8.75f),
+                    Dock = DockStyle.Top,
+                    Height = 22,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                };
+
+                var optionsRow = new Panel { Dock = DockStyle.Top, Height = 28 };
+
+                var optOui = new AnswerOption("Oui", true, ValidatedColor);
+                var optNon = new AnswerOption("Non", false, NotValidatedColor);
+
+                int spacing = 28;
+                int totalWidth = optOui.Width + spacing + optNon.Width;
+                int startX = (CardWidth - totalWidth) / 2;
+
+                optOui.Location = new Point(startX, 0);
+                optNon.Location = new Point(startX + optOui.Width + spacing, 0);
+
+                optOui.Answered += Answer;
+                optNon.Answered += Answer;
+
+                optionsRow.Controls.Add(optOui);
+                optionsRow.Controls.Add(optNon);
+
+                _reminderPanel.Controls.Add(optionsRow);
+                _reminderPanel.Controls.Add(question);
+            }
+            else
+            {
+                bool done = _reminderStatus.Value;
+                var statusLabel = new Label
+                {
+                    Text = done ? "●  Validé — employé relancé" : "●  Non validé — pas encore relancé",
+                    ForeColor = done ? ValidatedColor : NotValidatedColor,
+                    Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                };
+                _reminderPanel.Controls.Add(statusLabel);
+            }
+        }
+
+        private void Answer(bool done)
+        {
+            _reminderStatus = done;
+            _onAnswer(done);
+            ShowConfirmationAndAutoClose(done);
+        }
+
+        public void ApplyExternalAnswer(bool done)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => ApplyExternalAnswer(done)));
+                return;
+            }
+            if (_reminderStatus == done) return;
+            _reminderStatus = done;
+            ShowConfirmationAndAutoClose(done);
+        }
+
+        private void ShowConfirmationAndAutoClose(bool done)
+        {
+            _reminderPanel.Controls.Clear();
+            var confirmLabel = new Label
+            {
+                Text = done ? "✓ Réponse enregistrée — Oui" : "✓ Réponse enregistrée — Non",
+                ForeColor = done ? ValidatedColor : NotValidatedColor,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+            };
+            _reminderPanel.Controls.Add(confirmLabel);
+
+            var confirmTimer = new System.Windows.Forms.Timer { Interval = 1100 };
+            confirmTimer.Tick += (_, _) =>
+            {
+                confirmTimer.Stop();
+                confirmTimer.Dispose();
+                if (!IsDisposed) DismissByUser();
+            };
+            confirmTimer.Start();
+        }
+
         private void DismissByUser()
         {
-            _onDismiss();
+            _onUserDismiss();
             Close();
+        }
+
+        private void MinimizeByUser()
+        {
+            _onMinimize();
+            Close();
+        }
+
+        private void OpenDetailPage()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _detailUrl,
+                    UseShellExecute = true,
+                });
+            }
+            catch { /* navigateur non disponible, on ignore */ }
         }
 
         private void BuildLayout(ImapAlertDto alert)
@@ -110,7 +244,7 @@ namespace MailDetectorAgent
             };
             closeButton.MouseEnter += (_, _) => closeButton.ForeColor = Color.White;
             closeButton.MouseLeave += (_, _) => closeButton.ForeColor = CloseIdle;
-            closeButton.Click += (_, _) => DismissByUser();
+            closeButton.Click += (_, _) => MinimizeByUser();
 
             var divider = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = DividerColor };
 
@@ -122,48 +256,33 @@ namespace MailDetectorAgent
 
             var titleLabel = MakeLine("Mail non lu", TitleColor,
                 new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), TitleHeight);
+            titleLabel.Click += (_, _) => OpenDetailPage();
 
             var whoLabel = MakeLine($"{alert.employee_username} ({alert.department})", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
+            whoLabel.Cursor = Cursors.Hand;
+            whoLabel.Click += (_, _) => OpenDetailPage();
 
             var fromLabel = MakeLine($"De : {alert.sender}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
+            fromLabel.Cursor = Cursors.Hand;
+            fromLabel.Click += (_, _) => OpenDetailPage();
 
             var subjectLabel = MakeLine($"Sujet : {alert.subject}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
+            subjectLabel.Cursor = Cursors.Hand;
+            subjectLabel.Click += (_, _) => OpenDetailPage();
 
             textHost.Controls.Add(subjectLabel);
             textHost.Controls.Add(fromLabel);
             textHost.Controls.Add(whoLabel);
             textHost.Controls.Add(titleLabel);
 
-            var footerPanel = new Panel
-            {
-                Dock = DockStyle.Bottom,
-                Height = FooterHeight,
-                BackColor = BgColor,
-            };
-            var statusLabel = new Label
-            {
-                Text = $"●  Non lu — reçu le {FormatDate(alert.received_at)}",
-                ForeColor = WarningColor,
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-            };
-            footerPanel.Controls.Add(statusLabel);
-
-            Controls.Add(footerPanel);
+            Controls.Add(_reminderPanel);
             Controls.Add(divider);
             Controls.Add(textHost);
             Controls.Add(closeButton);
             Controls.Add(accentBar);
-        }
-
-        private static string FormatDate(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return "—";
-            return raw.Length >= 16 ? raw.Substring(0, 16).Replace("T", " ") : raw;
         }
 
         private static Label MakeLine(string text, Color color, Font font, int height)
@@ -176,6 +295,7 @@ namespace MailDetectorAgent
                 Dock = DockStyle.Top,
                 Height = height,
                 AutoEllipsis = true,
+                Cursor = Cursors.Hand,
             };
         }
 
