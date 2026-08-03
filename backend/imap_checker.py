@@ -148,28 +148,17 @@ def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
         imap.logout()
 
 def _clean_body_for_summary(text: str) -> str:
-    """Nettoie le texte brut des mails reçus (newsletters marketing) avant
-    résumé IA — enlève URLs, liens de désabonnement, espaces multiples, et
-    tronque à une longueur raisonnable. N'affecte pas le body stocké en
-    base pour affichage, seulement celui envoyé à generer_resume."""
     if not text:
         return text
 
-    # Supprime les URLs (souvent la source de bruit dans les newsletters)
     cleaned = re.sub(r"https?://\S+", "", text)
-
-    # Supprime les lignes typiques de désabonnement / mentions légales
     cleaned = re.sub(
         r"(?i)(se désabonner|unsubscribe|désinscri\w*|politique de confidentialit\w*|"
         r"tous droits réservés|all rights reserved|voir dans le navigateur|view in browser).*",
         "", cleaned
     )
-
-    # Réduit les espaces/sauts de ligne multiples
+    cleaned = _strip_signature(cleaned)         
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    # Tronque : un résumé n'a pas besoin de plus de ~2000 caractères de contexte,
-    # et ça réduit le bruit pour un petit modèle 1B.
     return cleaned[:2000]
 
 
@@ -253,11 +242,16 @@ def sync_account(account_id: int) -> None:
     for tracking_id, body, has_attachment in new_summaries + retry_summaries:
         compute_imap_summary_task.delay(tracking_id, body, has_attachment)
     
-
 def _extract_body_text(msg) -> str:
     """Extrait le texte brut du corps (privilégie text/plain, replie sur text/html nettoyé)."""
     if msg.is_multipart():
         for part in msg.walk():
+            if part.is_multipart():
+                continue
+            # Une partie avec un nom de fichier est une pièce jointe,
+            # même sans Content-Disposition: attachment explicite.
+            if part.get_filename():
+                continue
             if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition") or ""):
                 try:
                     payload = part.get_payload(decode=True)
@@ -266,6 +260,8 @@ def _extract_body_text(msg) -> str:
                 except Exception:
                     continue
         for part in msg.walk():
+            if part.is_multipart() or part.get_filename():
+                continue
             if part.get_content_type() == "text/html" and "attachment" not in str(part.get("Content-Disposition") or ""):
                 try:
                     payload = part.get_payload(decode=True)
@@ -283,14 +279,35 @@ def _extract_body_text(msg) -> str:
 
 
 def _has_attachment(msg) -> bool:
-    """Détecte si le mail contient une pièce jointe (Content-Disposition
-    attachment, ou pièce jointe nommée sans disposition explicite)."""
+    """Détecte si le mail contient une pièce jointe : Content-Disposition
+    attachment, OU toute partie non-multipart portant un nom de fichier
+    (indépendamment de son Content-Type)."""
     if not msg.is_multipart():
         return False
     for part in msg.walk():
+        if part.is_multipart():
+            continue
         disposition = str(part.get("Content-Disposition") or "")
         if "attachment" in disposition.lower():
             return True
-        if part.get_filename() and part.get_content_maintype() not in ("text", "multipart"):
+        if part.get_filename():
             return True
     return False
+
+
+_SIGNATURE_PATTERN = re.compile(
+    r"(?i)\s*(cordialement|bien à vous|salutations|regards|"
+    r"ing[ée]nieur[^+]*|\+?\d[\d\s]{7,}\d).*$"
+)
+
+def _strip_signature(text: str) -> str:
+    """Coupe le texte au premier indice de bloc signature détecté
+    (formule de politesse, titre de poste, numéro de téléphone)."""
+    match = re.search(
+        r"(?i)(cordialement|bien à vous|salutations professionnelles|"
+        r"best regards|sincerely|\+?\d[\d\s]{7,}\d)",
+        text,
+    )
+    if match:
+        return text[:match.start()].strip()
+    return text

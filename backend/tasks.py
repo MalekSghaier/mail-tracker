@@ -28,7 +28,7 @@ celery_app.conf.beat_schedule = {
     },
     "sync-imap-accounts-every-5min": {        
         "task": "tasks.sync_all_imap_accounts",
-        "schedule": 300.0,  # 5 minutes
+        "schedule": 30.0,  # 5 minutes
     },
     "reset-expired-imap-reminders-every-30s": {
         "task": "tasks.reset_expired_imap_reminders",
@@ -60,12 +60,20 @@ def compute_summary_task(self, tracking_id: str, body: str):
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=10)
 def compute_imap_summary_task(self, tracking_id: str, body: str, has_attachment: bool = False):
-    from extractive_summary import generer_resume_extractif
+    from ollama_client import generer_resume
     from db import get_db
     from models import ReceivedMailLog
     import uuid
 
-    ai_summary = generer_resume_extractif(body, has_attachment=has_attachment)
+    piece_jointe_note = " Une pièce jointe a été envoyée." if has_attachment else ""
+
+    if not body or not body.strip():
+        ai_summary = (
+            "L'expéditeur a envoyé une pièce jointe, sans texte dans le corps du message."
+            if has_attachment else ""
+        )
+    else:
+        ai_summary = generer_resume(body).strip() + piece_jointe_note
 
     with get_db() as db:
         mail = db.query(ReceivedMailLog).filter(ReceivedMailLog.tracking_id == uuid.UUID(tracking_id)).first()
