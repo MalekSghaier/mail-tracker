@@ -56,7 +56,7 @@ namespace MailDetectorAgent
             foreach (var a in alertList)
             {
                 bool isNew = !_pending.ContainsKey(a.Key);
-
+            
                 if (isNew)
                 {
                     _pending[a.Key] = a;
@@ -68,30 +68,32 @@ namespace MailDetectorAgent
                 }
                 else
                 {
-                    var prevCategory = _pending[a.Key].category;
-                    bool categoryChanged = prevCategory != a.category;
+                    var prev = _pending[a.Key];
+                    bool categoryChanged = prev.category != a.category;
                     bool reminderChanged = !Equals(
                         _reminderStatus.GetValueOrDefault(a.Key),
                         a.reminder_done);
-
-                    if (categoryChanged || reminderChanged)
+                    bool summaryChanged = prev.summary != a.summary; // <-- AJOUT
+            
+                    if (categoryChanged || reminderChanged || summaryChanged)
                     {
                         _pending[a.Key] = a;
                         _reminderStatus[a.Key] = a.reminder_done;
-
-                        if (a.category == "pending" && prevCategory != "pending")
+            
+                        if (a.category == "pending" && prev.category != "pending")
                         {
                             _minimizedSet.Remove(a.Key);
                         }
-
+            
                         centerNeedsRefresh = true;
                         Refresh();
-
-                        if (_singleForm != null && !_singleForm.IsDisposed
-                            && _singleForm.Key == a.Key
-                            && a.reminder_done.HasValue)
+            
+                        if (_singleForm != null && !_singleForm.IsDisposed && _singleForm.Key == a.Key)
                         {
-                            _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
+                            if (a.reminder_done.HasValue)
+                                _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
+                            if (summaryChanged)
+                                _singleForm.ApplyExternalSummary(a.summary); // <-- AJOUT
                         }
                     }
                 }

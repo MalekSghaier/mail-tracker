@@ -632,7 +632,10 @@ def _serialize_imap_alert(mail, account, app_user, category):
         "employee_username": app_user.username,
         "department": app_user.department,
         "sender": mail.sender_email or "",
+        "recipient": account.email,
+        "cc": mail.cc_email or "",
         "subject": mail.subject or "",
+        "summary": mail.ai_summary or "",
         "received_at": str(mail.received_at) if mail.received_at else "",
         "reminder_done": mail.reminder_done,
         "category": category,
@@ -785,12 +788,14 @@ def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
 
         mail_data = {
             "tracking_id": str(mail.tracking_id), "employee_username": app_user.username, "department": app_user.department,
-            "sender": mail.sender_email or "", "subject": mail.subject or "",
+            "sender": mail.sender_email or "", "recipient": account.email, "cc": mail.cc_email or "",
+            "subject": mail.subject or "", "body": mail.body or "", "summary": mail.ai_summary or "",
             "received_at": str(mail.received_at) if mail.received_at else "",
             "is_seen": mail.is_seen, "supervisor_acked": mail.supervisor_acked,
             "reminder_done": mail.reminder_done,
             "reminder_answered_at": str(mail.reminder_answered_at) if mail.reminder_answered_at else None,
         }
+        
         history_data = [
             {
                 "tracking_id": str(h.tracking_id), "employee_username": u.username, "sender": h.sender_email or "",
@@ -879,6 +884,7 @@ def imap_mail_detail_page(tracking_id: str):
     <div class="section-label">Mail reçu</div>
     <div class="mail-card">
       <div class="mail-card-header"><div class="mail-accent-bar"></div><div id="mail-meta"></div></div>
+      <div id="mail-summary-section"></div>
       <div class="mail-status-row" id="mail-status-row"></div>
       <div class="mail-reminder-section" id="reminder-section"></div>
     </div>
@@ -938,11 +944,22 @@ function renderReminder(reminder_done, reminder_at) {{
     <button class="btn-reminder btn-non" onclick="submitReminder(false)">✗ Non</button></div>`;
 }}
 function renderMail(mail, history) {{
-  document.getElementById('mail-meta').innerHTML = `
+  let metaHtml = `
     <div class="mail-subject">${{escapeHtml(mail.subject || '—')}}</div>
     <div class="mail-field"><span class="mail-field-key">Employé</span>${{escapeHtml(mail.employee_username)}} (${{escapeHtml(mail.department||'')}})</div>
     <div class="mail-field"><span class="mail-field-key">De</span>${{escapeHtml(mail.sender)}}</div>
-    <div class="mail-field"><span class="mail-field-key">Reçu</span>${{fmtDate(mail.received_at)}}</div>`;
+    <div class="mail-field"><span class="mail-field-key">À</span>${{escapeHtml(mail.recipient)}}</div>`;
+  if (mail.cc) {{
+    metaHtml += `<div class="mail-field"><span class="mail-field-key">Cc</span>${{escapeHtml(mail.cc)}}</div>`;
+  }}
+  metaHtml += `<div class="mail-field"><span class="mail-field-key">Reçu</span>${{fmtDate(mail.received_at)}}</div>`;
+  document.getElementById('mail-meta').innerHTML = metaHtml;
+
+  const summarySection = document.getElementById('mail-summary-section');
+  summarySection.innerHTML = mail.summary
+    ? `<div class="mail-summary-section"><div class="summary-icon">✦</div><div class="summary-text">${{escapeHtml(mail.summary)}}</div></div>`
+    : '';
+
   document.getElementById('mail-status-row').innerHTML = statusBadge(mail.is_seen, mail.supervisor_acked, mail.reminder_done);
   document.getElementById('reminder-section').innerHTML = renderReminder(mail.reminder_done, mail.reminder_answered_at);
   document.getElementById('history-label').textContent = `Mails non lus du département (${{history.length}})`;

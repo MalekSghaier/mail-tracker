@@ -5,12 +5,6 @@ using System.Windows.Forms;
 
 namespace MailDetectorAgent
 {
-    /// <summary>
-    /// Popup custom pour le scénario B (mail reçu non lu), miroir exact de
-    /// NotificationForm : clic sur le titre ouvre la page détail, question
-    /// "Avez-vous relancé l'employé ?" avec Oui/Non, même logique de
-    /// persistance et de fermeture automatique après réponse.
-    /// </summary>
     public sealed class ImapNotificationForm : Form
     {
         private const int CardWidth = 344;
@@ -18,12 +12,14 @@ namespace MailDetectorAgent
         private const int LineHeight = 18;
         private const int TitleHeight = 24;
         private const int TopRowHeight = 24;
+        private const int MinSummaryHeight = 40;
         private const int ReminderHeight = 60;
 
         private static readonly Color BgColor = Color.FromArgb(255, 26, 26, 34);
         private static readonly Color GoldAccent = Color.FromArgb(255, 212, 175, 90);
         private static readonly Color TitleColor = Color.White;
         private static readonly Color MetaColor = Color.FromArgb(255, 150, 150, 162);
+        private static readonly Color SummaryColor = Color.FromArgb(255, 222, 222, 230);
         private static readonly Color CloseIdle = Color.FromArgb(255, 120, 120, 130);
         private static readonly Color DividerColor = Color.FromArgb(255, 42, 42, 52);
         private static readonly Color ValidatedColor = Color.FromArgb(255, 72, 178, 128);
@@ -52,8 +48,10 @@ namespace MailDetectorAgent
             _detailUrl = $"{apiBase}/imap-mail/{alert.tracking_id}";
             Key = alert.Key;
 
-            int metaLines = 3; // employé (département), expéditeur, sujet
-            int cardHeight = TopRowHeight + TitleHeight + (metaLines * LineHeight) + 1 + ReminderHeight + 10;
+            bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
+            int metaLines = hasCc ? 3 : 2; 
+            int cardHeight = TopRowHeight + TitleHeight + (metaLines * LineHeight)
+                             + MinSummaryHeight + 1 + ReminderHeight + 10;
 
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -75,7 +73,7 @@ namespace MailDetectorAgent
             };
             BuildReminderContent();
 
-            BuildLayout(alert);
+            BuildLayout(alert, hasCc);
 
             _fadeTimer = new System.Windows.Forms.Timer { Interval = 15 };
             _fadeTimer.Tick += (_, _) =>
@@ -224,13 +222,15 @@ namespace MailDetectorAgent
                     UseShellExecute = true,
                 });
             }
-            catch { /* navigateur non disponible, on ignore */ }
+            catch { }
         }
 
-        private void BuildLayout(ImapAlertDto alert)
+        private Label? _summaryLabel;
+        
+        private void BuildLayout(ImapAlertDto alert, bool hasCc)
         {
             var accentBar = new Panel { BackColor = GoldAccent, Dock = DockStyle.Left, Width = 4 };
-
+        
             var closeButton = new Label
             {
                 Text = "✕",
@@ -245,45 +245,82 @@ namespace MailDetectorAgent
             closeButton.MouseEnter += (_, _) => closeButton.ForeColor = Color.White;
             closeButton.MouseLeave += (_, _) => closeButton.ForeColor = CloseIdle;
             closeButton.Click += (_, _) => MinimizeByUser();
-
+        
             var divider = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = DividerColor };
-
+        
             var textHost = new Panel
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(16, 0, 12, 10),
             };
-
-            var titleLabel = MakeLine("Mail non lu", TitleColor,
+        
+            var titleLabel = MakeLine($"Mail non lu — {alert.employee_username}", TitleColor,
                 new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold), TitleHeight);
             titleLabel.Click += (_, _) => OpenDetailPage();
-
-            var whoLabel = MakeLine($"{alert.employee_username} ({alert.department})", MetaColor,
-                new Font("Segoe UI", 8.5f), LineHeight);
-            whoLabel.Cursor = Cursors.Hand;
-            whoLabel.Click += (_, _) => OpenDetailPage();
-
+        
             var fromLabel = MakeLine($"De : {alert.sender}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
-            fromLabel.Cursor = Cursors.Hand;
-            fromLabel.Click += (_, _) => OpenDetailPage();
-
-            var subjectLabel = MakeLine($"Sujet : {alert.subject}", MetaColor,
+        
+            var toLabel = MakeLine($"À : {alert.recipient}", MetaColor,
                 new Font("Segoe UI", 8.5f), LineHeight);
-            subjectLabel.Cursor = Cursors.Hand;
-            subjectLabel.Click += (_, _) => OpenDetailPage();
-
-            textHost.Controls.Add(subjectLabel);
+        
+            Label? ccLabel = null;
+            if (hasCc)
+            {
+                ccLabel = MakeLine($"Cc : {alert.cc}", MetaColor,
+                    new Font("Segoe UI", 8.5f), LineHeight);
+            }
+        
+            var summaryFont = new Font("Segoe UI", 8.75f);
+            int summaryWidth = CardWidth - 16 - 12;
+            int summaryHeight = MinSummaryHeight;
+            _summaryLabel = new Label
+            {
+                Text = "Résumé : " + FormatSummary(alert.summary, summaryFont, summaryWidth, summaryHeight),
+                ForeColor = SummaryColor,
+                Font = summaryFont,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0, 6, 0, 0),
+                Cursor = Cursors.Hand,
+            };
+            _summaryLabel.Click += (_, _) => OpenDetailPage();
+        
+            textHost.Controls.Add(_summaryLabel);
+            if (ccLabel != null) textHost.Controls.Add(ccLabel);
+            textHost.Controls.Add(toLabel);
             textHost.Controls.Add(fromLabel);
-            textHost.Controls.Add(whoLabel);
             textHost.Controls.Add(titleLabel);
-
+        
             Controls.Add(_reminderPanel);
             Controls.Add(divider);
             Controls.Add(textHost);
             Controls.Add(closeButton);
             Controls.Add(accentBar);
         }
+        
+        /// <summary>Affiche "Résumé en cours de génération…" tant que le backend
+        /// n'a pas encore rempli ai_summary — évite un texte vide déroutant.</summary>
+        private string FormatSummary(string summary, Font font, int width, int height)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+                return "en cours de génération…";
+            return TruncateToFit(summary, font, new Size(width, height), "Résumé : ");
+        }
+        
+        /// <summary>Appelé par ImapNotificationManager quand le résumé arrive
+        /// après l'ouverture du popup (calcul IA terminé entre-temps).</summary>
+        public void ApplyExternalSummary(string summary)
+        {
+            if (IsDisposed || _summaryLabel == null) return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => ApplyExternalSummary(summary)));
+                return;
+            }
+            _summaryLabel.Text = "Résumé : " + FormatSummary(summary, _summaryLabel.Font,
+                _summaryLabel.Width, MinSummaryHeight);
+        }
+
 
         private static Label MakeLine(string text, Color color, Font font, int height)
         {
@@ -297,6 +334,30 @@ namespace MailDetectorAgent
                 AutoEllipsis = true,
                 Cursor = Cursors.Hand,
             };
+        }
+
+        private static string TruncateToFit(string text, Font font, Size maxSize, string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+
+            var flags = TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl;
+            var availableSize = new Size(maxSize.Width, maxSize.Height);
+
+            var fullSize = TextRenderer.MeasureText(prefix + text, font, availableSize, flags);
+            if (fullSize.Height <= maxSize.Height) return text;
+
+            string truncated = text;
+            while (truncated.Length > 1)
+            {
+                truncated = truncated[..^1];
+                string candidate = truncated.TrimEnd() + "…";
+                var size = TextRenderer.MeasureText(prefix + candidate, font, availableSize, flags);
+                if (size.Height <= maxSize.Height)
+                {
+                    return candidate;
+                }
+            }
+            return "…";
         }
 
         protected override void Dispose(bool disposing)
