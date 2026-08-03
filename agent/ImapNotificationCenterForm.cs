@@ -139,8 +139,10 @@ namespace MailDetectorAgent
 
         private Control BuildCard(ImapAlertDto alert)
         {
+            bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
+            int metaLines = hasCc ? 3 : 2; 
             int reminderHeight = 58;
-            int cardHeight = 16 + 22 + (3 * 17) + 8 + 1 + reminderHeight;
+            int cardHeight = 16 + 22 + (metaLines * 17) + 8 + 40 + 12 + 1 + reminderHeight;
 
             var card = new Panel
             {
@@ -178,22 +180,32 @@ namespace MailDetectorAgent
             var content = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 16 + (3 * 17) + 8,
+                Height = 16 + (metaLines * 17) + 8 + 40,
                 Padding = new Padding(16, 0, 14, 0),
             };
 
-            string titleText = alert.category == "seen_no_answer" ? "Vu — relance en attente" : "Mail non lu";
+            string titleText = alert.category == "seen_no_answer"
+                ? $"Vu — relance en attente ({alert.employee_username})"
+                : $"Mail non lu — {alert.employee_username}";
             var title = MakeLine(titleText, Color.White, new Font("Segoe UI Semibold", 9.75f, FontStyle.Bold), 22);
             title.Cursor = Cursors.Hand;
             title.Click += (_, _) => OpenDetailPage(alert.tracking_id);
 
-            var who = MakeLine($"{alert.employee_username} ({alert.department})", MetaColor, new Font("Segoe UI", 8.25f), 17);
             var from = MakeLine($"De : {alert.sender}", MetaColor, new Font("Segoe UI", 8.25f), 17);
-            var subject = MakeLine($"Sujet : {alert.subject}", MetaColor, new Font("Segoe UI", 8.25f), 17);
+            var to = MakeLine($"À : {alert.recipient}", MetaColor, new Font("Segoe UI", 8.25f), 17);
 
-            content.Controls.Add(subject);
+            var summary = MakeLine("Résumé : " + alert.summary, MetaColor,
+                new Font("Segoe UI", 8.25f), 40, fill: true);
+            summary.Padding = new Padding(0, 6, 0, 0);
+
+            content.Controls.Add(summary);
+            if (hasCc)
+            {
+                var cc = MakeLine($"Cc : {alert.cc}", MetaColor, new Font("Segoe UI", 8.25f), 17);
+                content.Controls.Add(cc);
+            }
+            content.Controls.Add(to);
             content.Controls.Add(from);
-            content.Controls.Add(who);
             content.Controls.Add(title);
 
             var innerDivider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = DividerColor };
@@ -209,6 +221,8 @@ namespace MailDetectorAgent
 
             return card;
         }
+
+
 
         private void AnswerAndConfirm(Panel reminderPanel, string key, bool done)
         {
@@ -300,15 +314,15 @@ namespace MailDetectorAgent
             }
             catch { }
         }
-
-        private static Label MakeLine(string text, Color color, Font font, int height)
+        
+        private static Label MakeLine(string text, Color color, Font font, int height, bool fill = false)
         {
             return new Label
             {
                 Text = text,
                 ForeColor = color,
                 Font = font,
-                Dock = DockStyle.Top,
+                Dock = fill ? DockStyle.Fill : DockStyle.Top,
                 Height = height,
                 AutoEllipsis = true,
             };

@@ -55,7 +55,10 @@ class ReceivedMailLog(Base):
     imap_account_id = Column(Integer, ForeignKey("imap_accounts.id", ondelete="CASCADE"), nullable=False)
     message_uid = Column(String, nullable=False)
     sender_email = Column(String, nullable=True)
+    cc_email = Column(String, nullable=True)        
     subject = Column(String, nullable=True)
+    body = Column(Text, nullable=True)               
+    ai_summary = Column(Text, nullable=True)          
     received_at = Column(DateTime(timezone=False), nullable=True)
     is_seen = Column(Boolean, default=False, nullable=False)
     last_checked_at = Column(DateTime(timezone=False), server_default=func.now())
@@ -63,7 +66,6 @@ class ReceivedMailLog(Base):
     reminder_done = Column(Boolean, nullable=True)
     reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
     reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
-
 
 
 class Session(Base):
@@ -78,7 +80,6 @@ class Session(Base):
     __table_args__ = (
         Index("idx_sessions_token_hash", "token_hash"),
     )
-
 
 
 class ImapAccount(Base):

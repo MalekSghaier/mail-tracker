@@ -58,6 +58,23 @@ def compute_summary_task(self, tracking_id: str, body: str):
     return {"tracking_id": tracking_id, "ok": True}
 
 
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=10)
+def compute_imap_summary_task(self, tracking_id: str, body: str, has_attachment: bool = False):
+    from extractive_summary import generer_resume_extractif
+    from db import get_db
+    from models import ReceivedMailLog
+    import uuid
+
+    ai_summary = generer_resume_extractif(body, has_attachment=has_attachment)
+
+    with get_db() as db:
+        mail = db.query(ReceivedMailLog).filter(ReceivedMailLog.tracking_id == uuid.UUID(tracking_id)).first()
+        if mail:
+            mail.ai_summary = ai_summary
+
+    return {"tracking_id": tracking_id, "ok": True}
+
+
 @celery_app.task
 def reset_expired_reminders():
     from db import get_db
