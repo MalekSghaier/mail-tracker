@@ -493,6 +493,40 @@ def admin_page():
       </div>
       <div class="empty-state" id="empty-state" style="display:none;">Aucun utilisateur pour l'instant.</div>
     </div>
+    <div class="section-label">Motifs IMAP exclus</div>
+    <div class="card">
+      <div class="form-grid" style="margin-bottom:16px;">
+        <div class="form-field">
+          <label>Motif (ex: linkedin.com, noreply)</label>
+          <input id="new-pattern" type="text" placeholder="ex: linkedin.com">
+        </div>
+        <div class="form-field">
+          <label>Description (optionnel)</label>
+          <input id="new-pattern-desc" type="text" placeholder="ex: Notifications LinkedIn">
+        </div>
+      </div>
+      <div class="form-footer">
+        <button class="btn btn-primary" id="add-pattern-btn" onclick="addExcludedPattern()" style="padding:11px 36px; width:auto;">
+          <span class="btn-label">Ajouter</span>
+          <span class="spinner"></span>
+        </button>
+      </div>
+      <div class="msg-ok" id="pattern-ok">Motif ajouté.</div>
+      <div class="msg-err" id="pattern-err"></div>
+    </div>
+
+    <div class="card" style="padding:0; overflow:hidden; margin-top:16px;">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Motif</th><th>Description</th><th>Statut</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="patterns-tbody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="patterns-empty-state" style="display:none;">Aucun motif exclu pour l'instant.</div>
+    </div>
+
   </div>
 
 </div>
@@ -543,6 +577,7 @@ function showDashboard() {
   document.getElementById('dashboard-view').style.display = 'block';
   loadStats();
   loadUsers();
+  loadExcludedPatterns();
 }
 
 function showLogin() {
@@ -870,6 +905,82 @@ function showConfirm(message, { title = "Confirmer l'action", confirmLabel = "Co
     overlay.addEventListener('click', onOverlayClick);
     document.addEventListener('keydown', onKeydown);
   });
+}
+
+async function loadExcludedPatterns() {
+  try {
+    const resp = await authFetch('/api/admin/imap-excluded-patterns');
+    const patterns = await resp.json();
+    const tbody = document.getElementById('patterns-tbody');
+    const emptyState = document.getElementById('patterns-empty-state');
+
+    if (patterns.length === 0) {
+      tbody.innerHTML = '';
+      emptyState.style.display = 'block';
+      return;
+    }
+    emptyState.style.display = 'none';
+    tbody.innerHTML = patterns.map(p => `
+      <tr>
+        <td class="username-cell">${escapeHtml(p.pattern)}</td>
+        <td>${escapeHtml(p.description || '—')}</td>
+        <td>${p.is_active ? '<span class="badge-active">● Actif</span>' : '<span class="badge-inactive">● Inactif</span>'}</td>
+        <td>
+          <button class="btn btn-danger" onclick="deleteExcludedPattern(${p.id})">Supprimer</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) { /* géré par authFetch */ }
+}
+
+async function addExcludedPattern() {
+  const pattern = document.getElementById('new-pattern').value.trim();
+  const description = document.getElementById('new-pattern-desc').value.trim();
+  const okEl = document.getElementById('pattern-ok');
+  const errEl = document.getElementById('pattern-err');
+  const btn = document.getElementById('add-pattern-btn');
+  okEl.style.display = 'none';
+  errEl.style.display = 'none';
+
+  if (!pattern) {
+    errEl.textContent = 'Le motif est requis.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  setButtonLoading(btn, true);
+  try {
+    const resp = await authFetch('/api/admin/imap-excluded-patterns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern, description: description || null })
+    });
+    if (resp.ok) {
+      okEl.style.display = 'block';
+      document.getElementById('new-pattern').value = '';
+      document.getElementById('new-pattern-desc').value = '';
+      loadExcludedPatterns();
+    } else {
+      const data = await resp.json();
+      errEl.textContent = data.detail || "Erreur lors de l'ajout.";
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+  } finally {
+    setButtonLoading(btn, false);
+  }
+}
+
+async function deleteExcludedPattern(id) {
+  const ok = await showConfirm(
+    "Les mails correspondant à ce motif ne seront plus exclus des alertes.",
+    { title: "Supprimer ce motif ?", confirmLabel: "Supprimer" }
+  );
+  if (!ok) return;
+  try {
+    await authFetch(`/api/admin/imap-excluded-patterns/${id}`, { method: 'DELETE' });
+    loadExcludedPatterns();
+  } catch (e) {}
 }
 
 if (token) {

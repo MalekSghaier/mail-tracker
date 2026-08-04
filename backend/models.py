@@ -98,7 +98,7 @@ class ImapExcludedPattern(Base):
     __tablename__ = "imap_excluded_patterns"
 
     id = Column(Integer, primary_key=True)
-    pattern = Column(String, unique=True, nullable=False)  # ex: "linkedin.com", "noreply"
-    description = Column(String, nullable=True)             # ex: "Notifications LinkedIn"
+    pattern = Column(String, unique=True, nullable=False)  
+    description = Column(String, nullable=True)             
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=False), server_default=func.now())

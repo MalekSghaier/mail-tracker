@@ -135,7 +135,7 @@ namespace MailDetectorAgent
 
             var subtitle = new Label
             {
-                Text = "Réservé aux utilisateurs abonnés, ajoutés par l'admin ARS.",
+                Text = "Réservé aux utilisateurs abonnés ARS.",
                 ForeColor = MetaColor,
                 Font = new Font("Segoe UI", 9f),
                 Location = new Point(32, 122),
