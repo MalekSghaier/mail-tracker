@@ -8,7 +8,19 @@ using System.Windows.Forms;
 namespace MailDetectorAgent
 {
     public sealed class ImapNotificationCenterForm : Form
+
     {
+        protected override bool ShowWithoutActivation => true;
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int WS_EX_NOACTIVATE = 0x08000000;
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_NOACTIVATE;
+                return cp;
+            }
+        }
         private static readonly Color PanelBg = Color.FromArgb(255, 16, 16, 22);
         private static readonly Color CardBg = Color.FromArgb(255, 26, 26, 34);
         private static readonly Color GoldAccent = Color.FromArgb(255, 212, 175, 90);
@@ -109,7 +121,7 @@ namespace MailDetectorAgent
             Controls.Add(_list);
             Controls.Add(headerBar);
 
-            Deactivate += (_, _) => Close();
+            //Deactivate += (_, _) => Close();
 
             RefreshList(alerts);
         }
