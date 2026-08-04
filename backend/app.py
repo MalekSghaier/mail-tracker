@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import or_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog,ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import encrypt_secret
-
+from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL
 
 
 load_dotenv()
@@ -116,6 +116,11 @@ def _apply_role_filter(query, user: dict):
 @app.get("/api/alerts")
 def get_alerts(user=Depends(get_current_user)):
 
+    cache_key = f"alerts:{user.get('sub')}:{user.get('account_role','employee')}:{user.get('department','')}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     with get_db() as db:
         pending_q = db.query(EmailLog).filter(
             EmailLog.opened_at.is_(None),
@@ -152,7 +157,7 @@ def get_alerts(user=Depends(get_current_user)):
                 "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
                 "category": "seen_no_answer",
             })
-
+    set_cached(cache_key, results)
     return results
 
 @app.get("/api/auth/verify")
@@ -165,6 +170,10 @@ def ack_alert(tracking_id: str, user=Depends(get_current_user)):
         mail = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)).first()
         if mail:
             mail.alert_acked = True
+    invalidate_prefix("alerts:")
+    invalidate_prefix(f"mail:{tracking_id}:")
+    invalidate_prefix("history:")
+    invalidate_prefix(f"state:{tracking_id}")
     return {"ok": True}
 
 class ReminderAnswer(BaseModel):
@@ -188,6 +197,10 @@ def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_cur
             mail.reminder_answered_at = datetime.now()
             mail.reminder_recheck_at = datetime.now() + timedelta(minutes=RECHECK_MINUTES)
 
+    invalidate_prefix("alerts:")
+    invalidate_prefix(f"mail:{tracking_id}:")
+    invalidate_prefix("history:")
+    invalidate_prefix(f"state:{tracking_id}")
     return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
 
 
@@ -198,15 +211,27 @@ class TrackingIds(BaseModel):
 def get_states(payload: TrackingIds, user=Depends(get_current_user)):
     if not payload.ids:
         return {}
-    with get_db() as db:
-        uuids = [uuid_lib.UUID(i) for i in payload.ids]
-        query = db.query(EmailLog).filter(EmailLog.tracking_id.in_(uuids))
-        query = _apply_role_filter(query, user)
-        rows = query.all()
-        result = {            
-          str(r.tracking_id): {"alert_acked": r.alert_acked, "reminder_done": r.reminder_done}            
-          for r in rows        
-        }
+
+    ids_str = [str(i) for i in payload.ids]
+    cache_keys = {f"state:{i}": i for i in ids_str}
+    cached = get_multi(list(cache_keys.keys()))
+    # cached est {cache_key: value} -> on reconvertit en {tracking_id: value}
+    result = {cache_keys[k]: v for k, v in cached.items()}
+
+    missing_ids = [i for i in ids_str if i not in result]
+    if missing_ids:
+        with get_db() as db:
+            uuids = [uuid_lib.UUID(i) for i in missing_ids]
+            query = db.query(EmailLog).filter(EmailLog.tracking_id.in_(uuids))
+            query = _apply_role_filter(query, user)
+            rows = query.all()
+            fresh = {
+                str(r.tracking_id): {"alert_acked": r.alert_acked, "reminder_done": r.reminder_done}
+                for r in rows
+            }
+        result.update(fresh)
+        set_multi({f"state:{tid}": val for tid, val in fresh.items()})
+
     return result
 
 @app.get("/api/alerts/{tracking_id}/status")
@@ -240,10 +265,18 @@ def finally_done(tracking_id: str, user=Depends(get_current_user)):
         mail.reminder_answered_at = datetime.now()
         mail.reminder_recheck_at = None
 
+    invalidate_prefix("alerts:")
+    invalidate_prefix(f"mail:{tracking_id}:")
+    invalidate_prefix("history:")
+    invalidate_prefix(f"state:{tracking_id}")
     return {"ok": True}
 
 @app.get("/api/history")
 def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0):
+    cache_key = f"history:{user.get('sub')}:{user.get('account_role','employee')}:{user.get('department','')}:{limit}:{offset}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
     with get_db() as db:
         query = db.query(EmailLog)
         query = _apply_role_filter(query, user)
@@ -280,7 +313,9 @@ def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0
             }
             for r in rows
         ]
-    return {"total": total, "limit": limit, "offset": offset, "items": result}
+    payload = {"total": total, "limit": limit, "offset": offset, "items": result}
+    set_cached(cache_key, payload, ttl=HISTORY_CACHE_TTL)
+    return payload
 
 
 class AdminLogin(BaseModel):
@@ -512,6 +547,10 @@ def logout(authorization: str = Header(None)):
 
 @app.get("/api/mail/{tracking_id}")
 def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
+    cache_key = f"mail:{tracking_id}:{user.get('sub')}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
         query = _apply_role_filter(query, user)
@@ -562,7 +601,9 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
             for h in history_rows
         ]
 
-    return {"mail": mail_data, "history": history_data}
+    result = {"mail": mail_data, "history": history_data}
+    set_cached(cache_key, result)
+    return result
 
 @app.get("/api/admin/imap-excluded-patterns")
 def list_excluded_patterns(admin=Depends(get_current_admin)):
@@ -652,6 +693,11 @@ def _require_supervisor(user: dict):
 def get_own_imap_alerts(user=Depends(get_current_user)):
     _require_supervisor(user)
 
+    cache_key = f"imap-alerts:{user.get('sub')}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     with get_db() as db:
         cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
 
@@ -674,7 +720,8 @@ def get_own_imap_alerts(user=Depends(get_current_user)):
         )
         for mail, account, app_user in seen_q.order_by(ReceivedMailLog.received_at.asc()).all():
             results.append(_serialize_imap_alert(mail, account, app_user, "seen_no_answer"))
-
+    
+    set_cached(cache_key, results)
     return results
 
 @app.post("/api/imap-alerts/{tracking_id}/ack")
@@ -684,6 +731,9 @@ def ack_imap_alert(tracking_id: str, user=Depends(get_current_user)):
         row = _own_imap_mail_query(db, user, tracking_id).first()
         if row:
             row[0].supervisor_acked = True
+    invalidate_prefix("imap-alerts:")
+    invalidate_prefix(f"imap-mail:{tracking_id}:")
+    invalidate_prefix("imap-history:")
     return {"ok": True}
 
 
@@ -707,6 +757,9 @@ def set_imap_reminder(tracking_id: str, payload: ImapReminderAnswer, user=Depend
             mail.reminder_done = False
             mail.reminder_answered_at = datetime.now()
             mail.reminder_recheck_at = datetime.now() + timedelta(minutes=RECHECK_MINUTES)
+    invalidate_prefix("imap-alerts:")
+    invalidate_prefix(f"imap-mail:{tracking_id}:")
+    invalidate_prefix("imap-history:")
     return {"ok": True, "recheck_in_minutes": None if payload.done else RECHECK_MINUTES}
 
 
@@ -733,6 +786,9 @@ def imap_finally_done(tracking_id: str, user=Depends(get_current_user)):
         mail.reminder_done = True
         mail.reminder_answered_at = datetime.now()
         mail.reminder_recheck_at = None
+    invalidate_prefix("imap-alerts:")
+    invalidate_prefix(f"imap-mail:{tracking_id}:")
+    invalidate_prefix("imap-history:")
     return {"ok": True}
 
 def _imap_history_sort_key(row):
@@ -752,6 +808,11 @@ def _imap_history_sort_key(row):
 @app.get("/api/imap-history")
 def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0):
     _require_supervisor(user)
+    cache_key = f"imap-history:{user.get('sub')}:{limit}:{offset}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     with get_db() as db:
         query = _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False))
         rows = sorted(query.all(), key=_imap_history_sort_key)
@@ -769,12 +830,19 @@ def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: in
             }
             for mail, account, app_user in rows
         ]
-    return {"total": total, "limit": limit, "offset": offset, "items": result}
+    payload = {"total": total, "limit": limit, "offset": offset, "items": result}
+    set_cached(cache_key, payload, ttl=HISTORY_CACHE_TTL)
+    return payload
 
 
 @app.get("/api/imap-mail/{tracking_id}")
 def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
     _require_supervisor(user)
+    cache_key = f"imap-mail:{tracking_id}:{user.get('sub')}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+    
     with get_db() as db:
         row = _own_imap_mail_query(db, user, tracking_id).first()
         if not row:
@@ -804,7 +872,10 @@ def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
             }
             for h, a, u in history_rows
         ]
-    return {"mail": mail_data, "history": history_data}
+    result = {"mail": mail_data, "history": history_data}
+    set_cached(cache_key, result)
+    return result
+
 
 @app.get("/imap-mail/{tracking_id}", response_class=HTMLResponse)
 def imap_mail_detail_page(tracking_id: str):
