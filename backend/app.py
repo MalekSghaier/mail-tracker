@@ -950,7 +950,9 @@ def imap_mail_detail_page(tracking_id: str):
   .reminder-yes {{ background:rgba(72,178,128,.12); color:var(--green); border:1px solid rgba(72,178,128,.25); }}
   .reminder-no {{ background:rgba(212,96,96,.12); color:var(--red); border:1px solid rgba(212,96,96,.25); }}
   .btn-finally-done {{ display:inline-flex; align-items:center; gap:8px; padding:9px 20px; background:rgba(212,175,90,.12); color:var(--gold); border:1px solid rgba(212,175,90,.3); border-radius:30px; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; }}
-  .recheck-notice {{ font-size:12px; color:var(--amber); }}
+  .btn-finally-done:hover {{ background:rgba(212,175,90,.2); border-color:var(--gold); }}
+  .recheck-notice {{ font-size:12px; color:var(--amber); display:flex; align-items:center; gap:6px; }}
+  .recheck-notice .icon {{ font-size:16px; }}
   .history-table-wrap {{ background:var(--card); border:1px solid var(--border); border-radius:16px; overflow:hidden; }}
   table {{ width:100%; border-collapse:collapse; font-size:13px; }}
   thead {{ background:var(--surface); border-bottom:1px solid var(--border); }}
@@ -959,6 +961,52 @@ def imap_mail_detail_page(tracking_id: str):
   tbody tr:hover {{ background:rgba(255,255,255,.03); }}
   tbody tr.row-current td {{ color:var(--gold); font-weight:600; }}
   td {{ padding:14px 20px; }}
+
+  .mail-summary-section {{
+    padding: 0 32px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }}
+  .summary-header {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--gold);
+  }}
+  .summary-header .icon {{ font-size: 14px; }}
+  .summary-box {{
+    background: var(--surface);
+    border: 1px solid rgba(212,175,90,.25);
+    border-radius: 10px;
+    padding: 16px 20px;
+    color: var(--text);
+    font-size: 13.5px;
+    line-height: 1.7;
+    font-style: italic;
+    box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  }}
+
+  /* Nouveau style pour le conteneur de rappel non effectué */
+  .reminder-not-done {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }}
+  .reminder-not-done .reminder-done {{
+    margin: 0;
+  }}
+  .reminder-not-done .btn-finally-done {{
+    margin: 0;
+  }}
+  .reminder-not-done .recheck-notice {{
+    margin: 0;
+  }}
 </style>
 </head>
 <body>
@@ -1028,13 +1076,21 @@ async function doLogin() {{
 }}
 function renderReminder(reminder_done, reminder_at) {{
   const dt = fmtDate(reminder_at);
-  if (reminder_done === true) return `<div class="reminder-done reminder-yes">✓ Relance effectuée — ${{dt}}</div>`;
-  if (reminder_done === false) return `<div><div class="reminder-done reminder-no">✗ Relance non effectuée — ${{dt}}</div>
-    <button class="btn-finally-done" onclick="finallyDone()">✓ Relance finalement faite</button>
-    <div class="recheck-notice">↻ Nouvelle alerte automatique.</div></div>`;
-  return `<span>Avez-vous relancé l'employé ?</span><div class="reminder-buttons">
-    <button class="btn-reminder btn-oui" onclick="submitReminder(true)">✓ Oui</button>
-    <button class="btn-reminder btn-non" onclick="submitReminder(false)">✗ Non</button></div>`;
+  if (reminder_done === true) {{
+    return `<div class="reminder-done reminder-yes">✓ Relance effectuée — ${{dt}}</div>`;
+  }}
+  if (reminder_done === false) {{
+    return `<div class="reminder-not-done">
+              <div class="reminder-done reminder-no">✗ Relance non effectuée — ${{dt}}</div>
+              <button class="btn-finally-done" onclick="finallyDone()">✓ Relance finalement faite</button>
+              <div class="recheck-notice"><span class="icon">↻</span> Nouvelle alerte automatique.</div>
+            </div>`;
+  }}
+  return `<span>Avez-vous relancé l'employé ?</span>
+          <div class="reminder-buttons">
+            <button class="btn-reminder btn-oui" onclick="submitReminder(true)">✓ Oui</button>
+            <button class="btn-reminder btn-non" onclick="submitReminder(false)">✗ Non</button>
+          </div>`;
 }}
 function renderMail(mail, history) {{
   let metaHtml = `
@@ -1049,9 +1105,15 @@ function renderMail(mail, history) {{
   document.getElementById('mail-meta').innerHTML = metaHtml;
 
   const summarySection = document.getElementById('mail-summary-section');
-  summarySection.innerHTML = mail.summary
-    ? `<div class="mail-summary-section"><div class="summary-icon">✦</div><div class="summary-text">${{escapeHtml(mail.summary)}}</div></div>`
-    : '';
+  if (mail.summary) {{
+    summarySection.innerHTML = `
+      <div class="mail-summary-section">
+        <div class="summary-header"><span class="icon">✦</span> Résumé IA</div>
+        <div class="summary-box">${{escapeHtml(mail.summary)}}</div>
+      </div>`;
+  }} else {{
+    summarySection.innerHTML = '';
+  }}
 
   document.getElementById('mail-status-row').innerHTML = statusBadge(mail.is_seen, mail.supervisor_acked, mail.reminder_done);
   document.getElementById('reminder-section').innerHTML = renderReminder(mail.reminder_done, mail.reminder_answered_at);
@@ -1080,12 +1142,28 @@ async function loadMail() {{
   }} catch(e) {{}}
 }}
 async function submitReminder(done) {{
-  await authFetch(`/api/imap-alerts/${{mid}}/reminder`, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{done}})}});
-  await loadMail();
+  const section = document.getElementById('reminder-section');
+  section.style.opacity = '0.5';
+  section.style.pointerEvents = 'none';
+  try {{
+    await authFetch(`/api/imap-alerts/${{mid}}/reminder`, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{done}})}});
+    await loadMail();
+  }} finally {{
+    section.style.opacity = '1';
+    section.style.pointerEvents = 'auto';
+  }}
 }}
 async function finallyDone() {{
-  await authFetch(`/api/imap-alerts/${{mid}}/finally-done`, {{method:'POST'}});
-  await loadMail();
+  const section = document.getElementById('reminder-section');
+  section.style.opacity = '0.5';
+  section.style.pointerEvents = 'none';
+  try {{
+    await authFetch(`/api/imap-alerts/${{mid}}/finally-done`, {{method:'POST'}});
+    await loadMail();
+  }} finally {{
+    section.style.opacity = '1';
+    section.style.pointerEvents = 'auto';
+  }}
 }}
 if (token) loadMail(); else {{ document.getElementById('loading-view').style.display='none'; document.getElementById('login-view').style.display='block'; }}
 setInterval(() => {{ if (token) loadMail(); }}, 3000);

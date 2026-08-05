@@ -19,7 +19,7 @@ namespace MailDetectorAgent
 
         private const int CardWidth = 332;
 
-        private readonly FlowLayoutPanel _list;
+        private readonly DarkScrollFlowPanel _list;
         private readonly Label _titleLabel;
         private readonly Label _countLabel;
         private readonly Action<string> _onDismiss;
@@ -96,12 +96,9 @@ namespace MailDetectorAgent
             headerBar.Controls.Add(titleRow);
             headerBar.Controls.Add(closeHeader);
 
-            _list = new FlowLayoutPanel
+            _list = new DarkScrollFlowPanel
             {
                 Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                AutoScroll = true,
                 Padding = new Padding(16, 12, 16, 16),
                 BackColor = PanelBg,
             };
@@ -125,14 +122,13 @@ namespace MailDetectorAgent
         {
             _countLabel.Text = alerts.Count.ToString();
             PositionCountBadge();
-
             _list.SuspendLayout();
             _list.Controls.Clear();
             foreach (var alert in alerts)
             {
                 _list.Controls.Add(BuildCard(alert));
             }
-            _list.ResumeLayout();
+            _list.ResumeLayout(true); 
 
             if (alerts.Count == 0) Close();
         }
