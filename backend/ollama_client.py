@@ -3,60 +3,55 @@ Appelle Ollama (local) pour générer un résumé court du corps du mail.
 Nécessite qu'Ollama tourne déjà (ollama serve) avec le modèle téléchargé.
 """
 import re
-
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2:1b"
+MODEL = "qwen2.5:3b"  # Changé de llama3.2:1b à qwen2.5:3b
 
-# Mots à ignorer dans la vérification de cohérence (trop fréquents pour être discriminants)
+# Mots à ignorer dans la vérification de cohérence
 STOPWORDS = {
     "le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "à", "au",
     "aux", "ce", "cette", "ces", "pour", "par", "sur", "dans", "avec", "que",
     "qui", "est", "sont", "a", "ont", "se", "son", "sa", "ses", "en", "il",
-    "elle", "vous", "nous", "merci", "bonjour",
+    "elle", "vous", "nous", "merci", "bonjour", "cordialement", "the", "a",
+    "an", "of", "to", "and", "or", "is", "are", "in", "on", "for", "with",
 }
-
 
 def _mots_significatifs(texte: str) -> set:
     mots = re.findall(r"[a-zàâäéèêëïîôùûüç]{4,}", texte.lower())
     return set(mots) - STOPWORDS
 
-
 def _resume_coherent(body_text: str, resume: str) -> bool:
-    """Vérification basique anti-hallucination : le résumé doit partager au
-    moins un mot significatif avec le texte d'origine. Imparfait mais
-    suffisant pour rejeter les résumés complètement inventés."""
+    """Vérification basique anti-hallucination."""
     mots_body = _mots_significatifs(body_text)
     mots_resume = _mots_significatifs(resume)
     if not mots_body or not mots_resume:
-        return True  # pas assez de matière pour juger, on laisse passer
+        return True
     return len(mots_body & mots_resume) > 0
 
-
 def generer_resume(body_text: str) -> str:
+    """Génère un résumé en une phrase générale."""
     if not body_text or not body_text.strip():
         return ""
 
+    # Nettoie le body pour éviter les balises HTML, URLs, etc.
+    body_clean = re.sub(r"<[^>]+>", " ", body_text)
+    body_clean = re.sub(r"https?://\S+", "", body_clean)
+    body_clean = re.sub(r"\s+", " ", body_clean).strip()
+    
+    # Tronque si trop long pour éviter de saturer le contexte
+    if len(body_clean) > 3000:
+        body_clean = body_clean[:3000] + "..."
+
     prompt = (
-        "Voici un e-mail professionnel reçu par un employé. Ta tâche est UNIQUEMENT de "
-        "résumer ce message en une phrase complète, du point de vue d'un observateur "
-        "extérieur. Ne réponds JAMAIS au message, n'invente AUCUN contenu, ne donne "
-        "aucun avis. Ne réponds JAMAIS par un seul mot : ta phrase doit mentionner à "
-        "la fois le sujet et l'action ou l'information principale du message.\n\n"
-        "Exemple 1 :\n"
-        "Message : « Bonjour, peux-tu m'envoyer le rapport mensuel avant 17h ? »\n"
-        "Résumé : Demande d'envoi du rapport mensuel avant 17h.\n\n"
-        "Exemple 2 :\n"
-        "Message : « La livraison du matériel est prévue lundi prochain. »\n"
-        "Résumé : Information sur la livraison du matériel prévue lundi prochain.\n\n"
-        "Maintenant, résume ce message de la même façon (une phrase complète, "
-        "rien d'autre) :\n"
-        f"« {body_text} »\n"
+        "Voici un e-mail. Résume-le en une phrase courte et générale (10-15 mots) "
+        "qui donne le sujet principal. Ne réponds pas au message, ne donne pas d'avis, "
+        "ne répète pas le texte. Juste une phrase résumant le sujet.\n\n"
+        f"Message : « {body_clean} »\n"
         "Résumé :"
     )
 
-    fallback = re.sub(r"<[^>]+>", "", body_text).strip()[:150]
+    fallback = " ".join(body_clean.split()[:20]) + "..."
 
     try:
         resp = requests.post(
@@ -65,22 +60,42 @@ def generer_resume(body_text: str) -> str:
                 "model": MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.1,"num_predict": 60,}, 
-                "keep_alive": "30m",
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 30,  # Résumé court
+                    "top_k": 20,
+                    "top_p": 0.8,
+                },
+                "keep_alive": "5m",
             },
-        
-            timeout=90,
+            timeout=60,
         )
         resp.raise_for_status()
         resume = resp.json().get("response", "").strip()
+        print(f"[ollama_client] Résumé généré pour body de {len(body_text)} caractères: {resume!r}")
 
-        if not resume or not _resume_coherent(body_text, resume) or len(resume.split()) < 4:
-            print(f"[ollama_client] résumé rejeté (incohérent ou trop court) : {resume!r} — fallback utilisé")
+        # Si le résumé est vide, trop court ou incohérent, on utilise le fallback
+        if not resume or len(resume.split()) < 3:
+            print(f"[ollama_client] Résumé trop court, fallback utilisé")
             return fallback
 
+        if not _resume_coherent(body_clean, resume):
+            print(f"[ollama_client] Résumé incohérent, fallback utilisé")
+            return fallback
+
+        # Nettoie le résumé
+        resume = re.sub(r'^["\']+|["\']+$', '', resume).strip()
+        if len(resume) > 200:
+            resume = resume[:200] + "..."
+
         return resume
+
+    except requests.exceptions.Timeout:
+        print("[ollama_client] Timeout Ollama")
+        return fallback
+    except requests.exceptions.ConnectionError:
+        print("[ollama_client] Connexion impossible à Ollama")
+        return fallback
     except Exception as e:
-        # En cas d'échec (Ollama pas démarré, modèle absent...), on retombe
-        # sur un résumé simple plutôt que de bloquer l'enregistrement du mail.
-        print(f"[ollama_client] échec génération résumé IA : {e}")
+        print(f"[ollama_client] Erreur inattendue : {e}")
         return fallback
