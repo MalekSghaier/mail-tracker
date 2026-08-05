@@ -164,7 +164,7 @@ namespace MailDetectorAgent
         private void Answer(bool done)
         {
             _reminderStatus = done;
-            _onAnswer(done); // persiste en base via le backend
+            _onAnswer(done); 
             ShowConfirmationAndAutoClose(done);
         }
 

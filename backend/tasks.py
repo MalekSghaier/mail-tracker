@@ -28,12 +28,19 @@ celery_app.conf.beat_schedule = {
     },
     "sync-imap-accounts-every-5min": {        
         "task": "tasks.sync_all_imap_accounts",
-        "schedule": 30.0,  # 5 minutes
+        "schedule": 300.0,  # 5 minutes
     },
     "reset-expired-imap-reminders-every-30s": {
         "task": "tasks.reset_expired_imap_reminders",
         "schedule": 30.0,
     },
+}
+
+celery_app.conf.task_routes = {
+    "tasks.sync_account_task": {"queue": "imap_sync"},
+    "tasks.sync_all_imap_accounts": {"queue": "imap_sync"},
+    "tasks.reset_expired_reminders": {"queue": "maintenance"},
+    "tasks.reset_expired_imap_reminders": {"queue": "maintenance"},
 }
 
 
@@ -88,9 +95,10 @@ def reset_expired_reminders():
     from db import get_db
     from models import EmailLog
     from datetime import datetime
+    from cache import invalidate_prefix
 
     with get_db() as db:
-        db.query(EmailLog).filter(
+        updated = db.query(EmailLog).filter(         
             EmailLog.reminder_done.is_(False),
             EmailLog.reminder_recheck_at.isnot(None),
             EmailLog.reminder_recheck_at < datetime.now(),
@@ -104,7 +112,13 @@ def reset_expired_reminders():
             synchronize_session=False,
         )
 
-    return {"ok": True}
+    if updated:
+        invalidate_prefix("alerts:")
+        invalidate_prefix("history:")
+        invalidate_prefix("mail:")
+        invalidate_prefix("state:")
+
+    return {"ok": True, "updated": updated}
 
 @celery_app.task
 def sync_all_imap_accounts():
@@ -134,9 +148,10 @@ def reset_expired_imap_reminders():
     from db import get_db
     from models import ReceivedMailLog
     from datetime import datetime
+    from cache import invalidate_prefix
 
     with get_db() as db:
-        db.query(ReceivedMailLog).filter(
+        updated = db.query(ReceivedMailLog).filter(    # <-- assigner ici
             ReceivedMailLog.reminder_done.is_(False),
             ReceivedMailLog.reminder_recheck_at.isnot(None),
             ReceivedMailLog.reminder_recheck_at < datetime.now(),
@@ -149,4 +164,10 @@ def reset_expired_imap_reminders():
             },
             synchronize_session=False,
         )
-    return {"ok": True}
+
+    if updated:
+        invalidate_prefix("imap-alerts:")
+        invalidate_prefix("imap-history:")
+        invalidate_prefix("imap-mail:")
+
+    return {"ok": True, "updated": updated}
