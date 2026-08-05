@@ -26,7 +26,7 @@ IMAP_ALERT_THRESHOLD_MINUTES = int(os.getenv("IMAP_ALERT_THRESHOLD_MINUTES", 2))
 RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
 PIXEL_ANTISCAN_DELAY_SECONDS = 5
 
-app = FastAPI(title="Mail Detector POC")
+app = FastAPI(title="Mail Detector")
 app.include_router(admin_router)
 
 
@@ -426,6 +426,7 @@ def get_imap_alerts(admin=Depends(get_current_admin)):
             .order_by(ReceivedMailLog.received_at.asc())
             .all()
         )
+        rows = _apply_excluded_patterns_filter(rows, db) 
 
         results = [
             {
@@ -625,6 +626,9 @@ def add_excluded_pattern(payload: ExcludedPatternCreate, admin=Depends(get_curre
         db.add(entry)
         db.flush()
         pattern_id = entry.id
+        invalidate_prefix("imap-alerts:")     
+        invalidate_prefix("imap-history:")    
+        invalidate_prefix("imap-mail:")       
     return {"id": pattern_id, "pattern": payload.pattern}
 
 @app.delete("/api/admin/imap-excluded-patterns/{pattern_id}")
@@ -633,6 +637,9 @@ def delete_excluded_pattern(pattern_id: int, admin=Depends(get_current_admin)):
         pattern = db.query(ImapExcludedPattern).filter(ImapExcludedPattern.id == pattern_id).first()
         if pattern:
             db.delete(pattern)
+            invalidate_prefix("imap-alerts:")   
+            invalidate_prefix("imap-history:")    
+            invalidate_prefix("imap-mail:")       
     return {"ok": True}
 
 
@@ -653,6 +660,20 @@ def _apply_imap_role_filter(query, user: dict):
 
     return query.filter(False)
 
+def _apply_excluded_patterns_filter(query, db):
+    """Exclut les ReceivedMailLog dont l'expéditeur correspond à un motif actif."""
+    patterns = [
+        row.pattern
+        for row in db.query(ImapExcludedPattern.pattern)
+                     .filter(ImapExcludedPattern.is_active.is_(True))
+                     .all()
+    ]
+    if not patterns:
+        return query
+    conditions = [ReceivedMailLog.sender_email.ilike(f"%{p}%") for p in patterns]
+    return query.filter(~or_(*conditions))
+
+
 def _own_imap_mail_query(db, user, tracking_id: str | None = None):
     query = (
         db.query(ReceivedMailLog, ImapAccount, AppUser)
@@ -660,6 +681,7 @@ def _own_imap_mail_query(db, user, tracking_id: str | None = None):
         .join(AppUser, ImapAccount.app_user_id == AppUser.id)
     )
     query = _apply_imap_role_filter(query, user)
+    query = _apply_excluded_patterns_filter(query, db) 
     if tracking_id is not None:
         query = query.filter(ReceivedMailLog.tracking_id == uuid_lib.UUID(tracking_id))
     return query

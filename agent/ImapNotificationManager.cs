@@ -39,24 +39,34 @@ namespace MailDetectorAgent
         {
             var alertList = alerts.ToList();
             var currentKeys = new HashSet<string>(alertList.Select(a => a.Key));
-
+        
             var goneKeys = _pending.Keys.Where(k => !currentKeys.Contains(k)).ToList();
             bool anyGone = goneKeys.Count > 0;
             foreach (var key in goneKeys)
             {
+                var goneAlert = _pending[key];
+                bool wasAnsweredLocally = _reminderStatus.TryGetValue(key, out var status) && status.HasValue;
+        
                 _pending.Remove(key);
                 _reminderStatus.Remove(key);
                 _minimizedSet.Remove(key);
+        
+                if (wasAnsweredLocally)
+                {
+                    Console.WriteLine($"[ImapNotificationManager] {key} disparu avec réponse déjà donnée -> ack de secours");
+                    _ = _ackCallback?.Invoke(goneAlert.tracking_id);
+                }
+        
                 if (_singleForm != null && !_singleForm.IsDisposed && _singleForm.Key == key)
                     _singleForm.Close();
             }
-
+        
             bool centerNeedsRefresh = false;
-
+        
             foreach (var a in alertList)
             {
                 bool isNew = !_pending.ContainsKey(a.Key);
-            
+        
                 if (isNew)
                 {
                     _pending[a.Key] = a;
@@ -73,42 +83,48 @@ namespace MailDetectorAgent
                     bool reminderChanged = !Equals(
                         _reminderStatus.GetValueOrDefault(a.Key),
                         a.reminder_done);
-                    bool summaryChanged = prev.summary != a.summary; // <-- AJOUT
-            
+                    bool summaryChanged = prev.summary != a.summary;
+        
                     if (categoryChanged || reminderChanged || summaryChanged)
                     {
                         _pending[a.Key] = a;
                         _reminderStatus[a.Key] = a.reminder_done;
-            
+        
                         if (a.category == "pending" && prev.category != "pending")
                         {
                             _minimizedSet.Remove(a.Key);
                         }
-            
+        
                         centerNeedsRefresh = true;
                         Refresh();
-            
+        
                         if (_singleForm != null && !_singleForm.IsDisposed && _singleForm.Key == a.Key)
                         {
                             if (a.reminder_done.HasValue)
                                 _singleForm.ApplyExternalAnswer(a.reminder_done.Value);
                             if (summaryChanged)
-                                _singleForm.ApplyExternalSummary(a.summary); // <-- AJOUT
+                                _singleForm.ApplyExternalSummary(a.summary);
                         }
                     }
                 }
             }
-
+        
             if (anyGone) Refresh();
             if (centerNeedsRefresh) _centerForm?.RefreshList(_pending.Values.ToList());
         }
 
         public static void Dismiss(string key)
         {
+            Console.WriteLine($"[ImapNotificationManager] Dismiss appelé pour {key}"); // <-- AJOUT
             if (_pending.TryGetValue(key, out var alert))
             {
                 _pending.Remove(key);
                 _ = _ackCallback?.Invoke(alert.tracking_id);
+                Console.WriteLine($"[ImapNotificationManager] ackCallback invoqué pour {alert.tracking_id}"); // <-- AJOUT
+            }
+            else
+            {
+                Console.WriteLine($"[ImapNotificationManager] Dismiss : clé {key} introuvable dans _pending !"); // <-- AJOUT
             }
             _reminderStatus.Remove(key);
             _minimizedSet.Remove(key);
