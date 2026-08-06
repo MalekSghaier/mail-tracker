@@ -92,9 +92,7 @@ def track(tracking_id: str):
         },
     )
 
-def _apply_role_filter(query, user: dict):
-    """Équivalent ORM de build_alerts_filter — appliqué directement sur
-    une requête SQLAlchemy plutôt que par concaténation de SQL texte."""
+def _apply_role_filter(query, user: dict, db):
     account_role = user.get("account_role", "employee")
 
     if account_role == "superadmin":
@@ -104,8 +102,12 @@ def _apply_role_filter(query, user: dict):
         department = user.get("department")
         if not department:
             return query.filter(False)
-        with get_db() as db:
-            emails = [r.email for r in db.query(AppUser.email).filter(AppUser.department == department).all()]
+        emails = [
+            r.email
+            for r in db.query(AppUser.email)
+                       .filter(AppUser.department == department)
+                       .all()
+        ]
         return query.filter(EmailLog.sender_email.in_(emails))
 
     email = user.get("email")
@@ -129,7 +131,7 @@ def get_alerts(user=Depends(get_current_user)):
         )
         cutoff = datetime.now() - timedelta(minutes=THRESHOLD_MINUTES)
         pending_q = pending_q.filter(EmailLog.sent_at < cutoff)
-        pending_q = _apply_role_filter(pending_q, user)
+        pending_q = _apply_role_filter(pending_q, user, db)
 
         results = [
             {
@@ -147,7 +149,7 @@ def get_alerts(user=Depends(get_current_user)):
             EmailLog.reminder_done.is_(None),
             EmailLog.opened_at.is_(None),
         )
-        seen_q = _apply_role_filter(seen_q, user)
+        seen_q = _apply_role_filter(seen_q, user, db)
 
         for r in seen_q.all():
             results.append({
@@ -167,7 +169,7 @@ def verify_token(user=Depends(get_current_user)):
 @app.post("/api/alerts/{tracking_id}/ack")
 def ack_alert(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)), user)
+        query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)), user, db)
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
@@ -185,7 +187,7 @@ class ReminderAnswer(BaseModel):
 def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_current_user)):
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
-        query = _apply_role_filter(query, user)
+        query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
@@ -225,7 +227,7 @@ def get_states(payload: TrackingIds, user=Depends(get_current_user)):
         with get_db() as db:
             uuids = [uuid_lib.UUID(i) for i in missing_ids]
             query = db.query(EmailLog).filter(EmailLog.tracking_id.in_(uuids))
-            query = _apply_role_filter(query, user)
+            query = _apply_role_filter(query, user, db)
             rows = query.all()
             fresh = {
                 str(r.tracking_id): {"alert_acked": r.alert_acked, "reminder_done": r.reminder_done}
@@ -240,7 +242,7 @@ def get_states(payload: TrackingIds, user=Depends(get_current_user)):
 def get_alert_status(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
-        query = _apply_role_filter(query, user)
+        query = _apply_role_filter(query, user, db)
         mail = query.first()
 
         if not mail:
@@ -258,7 +260,7 @@ def finally_done(tracking_id: str, user=Depends(get_current_user)):
 
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
-        query = _apply_role_filter(query, user)
+        query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
@@ -281,7 +283,7 @@ def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0
         return cached
     with get_db() as db:
         query = db.query(EmailLog)
-        query = _apply_role_filter(query, user)
+        query = _apply_role_filter(query, user, db)
         rows = query.all()
 
         def sort_key(r):
@@ -556,13 +558,13 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
         return cached
     with get_db() as db:
         query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
-        query = _apply_role_filter(query, user)
+        query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
 
         history_query = db.query(EmailLog)
-        history_query = _apply_role_filter(history_query, user)
+        history_query = _apply_role_filter(history_query, user, db)
         history_rows = history_query.all()
 
         def sort_key(r):
