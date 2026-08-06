@@ -167,7 +167,8 @@ def verify_token(user=Depends(get_current_user)):
 @app.post("/api/alerts/{tracking_id}/ack")
 def ack_alert(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        mail = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)).first()
+        query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)), user)
+        mail = query.first()
         if mail:
             mail.alert_acked = True
     invalidate_prefix("alerts:")
@@ -901,6 +902,11 @@ def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
 
 @app.get("/imap-mail/{tracking_id}", response_class=HTMLResponse)
 def imap_mail_detail_page(tracking_id: str):
+    try:
+        tracking_id = str(uuid_lib.UUID(tracking_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Mail introuvable")
+
     return HTMLResponse(content=f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -1217,6 +1223,11 @@ def mail_detail_page(tracking_id: str):
     """Coquille HTML statique — ne contient AUCUNE donnée de mail.
     Les données réelles sont chargées côté client via /api/mail/{tracking_id}
     après authentification (le token est stocké dans localStorage)."""
+    try:
+        tracking_id = str(uuid_lib.UUID(tracking_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Mail introuvable")
+
     return HTMLResponse(content=f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
