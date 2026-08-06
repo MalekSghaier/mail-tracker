@@ -1092,6 +1092,7 @@ function renderReminder(reminder_done, reminder_at) {{
             <button class="btn-reminder btn-non" onclick="submitReminder(false)">✗ Non</button>
           </div>`;
 }}
+
 function renderMail(mail, history) {{
   let metaHtml = `
     <div class="mail-subject">${{escapeHtml(mail.subject || '—')}}</div>
