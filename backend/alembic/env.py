@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db import Base, DATABASE_URL
-from models import Admin, AppUser, EmailLog, Session 
+from models import Admin, AppUser, EmailLog, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
