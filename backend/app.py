@@ -169,8 +169,9 @@ def ack_alert(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
         query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)), user)
         mail = query.first()
-        if mail:
-            mail.alert_acked = True
+        if not mail:
+            raise HTTPException(status_code=404, detail="Mail introuvable")
+        mail.alert_acked = True
     invalidate_prefix("alerts:")
     invalidate_prefix(f"mail:{tracking_id}:")
     invalidate_prefix("history:")
