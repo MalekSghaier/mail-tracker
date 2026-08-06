@@ -19,10 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_column("imap_accounts", "imap_host")
-    op.drop_column("imap_accounts", "imap_port")
+    pass
 
 
 def downgrade() -> None:
-    op.add_column("imap_accounts", sa.Column("imap_host", sa.String(), nullable=True))
-    op.add_column("imap_accounts", sa.Column("imap_port", sa.Integer(), nullable=True, server_default="993"))
+    pass

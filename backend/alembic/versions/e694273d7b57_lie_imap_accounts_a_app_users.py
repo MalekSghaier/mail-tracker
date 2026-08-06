@@ -19,8 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("imap_accounts", sa.Column("app_user_id", sa.Integer(), sa.ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True))
+    pass
 
 
 def downgrade() -> None:
-    op.drop_column("imap_accounts", "app_user_id")
+    pass

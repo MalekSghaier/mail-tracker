@@ -1,19 +1,20 @@
-"""ajout imap_excluded_patterns
+"""ajout colonnes manquantes received_mail_log
 
-Revision ID: cf29780f3ca9
-Revises: 303e85031398
-Create Date: 2026-07-27 10:45:33.101160
+Revision ID: 77c15847f7cd
+Revises: e694273d7b57
+Create Date: 2026-08-06 12:00:08.592840
 
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'cf29780f3ca9'
-down_revision: Union[str, Sequence[str], None] = '303e85031398'
+revision: str = '77c15847f7cd'
+down_revision: Union[str, Sequence[str], None] = 'e694273d7b57'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
