@@ -30,6 +30,7 @@ namespace MailDetectorAgent
         private readonly Label _titleLabel;
         private readonly Label _countLabel;
         private readonly Action<string> _onDismiss;
+        private readonly Action<string> _onMinimize;  
         private readonly Func<string, bool?> _getReminderStatus;
         private readonly Action<string, bool> _setReminderStatus;
         private readonly string _apiBase;
@@ -37,11 +38,13 @@ namespace MailDetectorAgent
         public NotificationCenterForm(
             List<AlertDto> alerts,
             Action<string> onDismiss,
+            Action<string> onMinimize,
             Func<string, bool?> getReminderStatus,
             Action<string, bool> setReminderStatus,
             string apiBase)
         {
             _onDismiss = onDismiss;
+            _onMinimize = onMinimize;
             _getReminderStatus = getReminderStatus;
             _setReminderStatus = setReminderStatus;
             _apiBase = apiBase; 
@@ -149,6 +152,7 @@ namespace MailDetectorAgent
             if (alerts.Count == 0) Close();
         }
 
+
         private Control BuildCard(AlertDto alert)
         {
             bool hasCc = !string.IsNullOrWhiteSpace(alert.cc);
@@ -189,7 +193,7 @@ namespace MailDetectorAgent
             };
             close.MouseEnter += (_, _) => close.ForeColor = Color.White;
             close.MouseLeave += (_, _) => close.ForeColor = Color.FromArgb(255, 120, 120, 130);
-            close.Click += (_, _) => _onDismiss(alert.tracking_id);
+            close.Click += (_, _) => _onMinimize(alert.tracking_id);
 
             var content = new Panel
             {
@@ -241,6 +245,15 @@ namespace MailDetectorAgent
 
             return card;
         }
+        private void MinimizeCard(Control card, string trackingId)
+        {
+            _list.Controls.Remove(card);
+            card.Dispose();
+            _onMinimize(trackingId);
+            if (_list.Controls.Count == 0) Close();
+        }
+
+
 
         private void AnswerAndConfirm(Panel reminderPanel, string trackingId, bool done)
         {
@@ -264,7 +277,7 @@ namespace MailDetectorAgent
             {
                 confirmTimer.Stop();
                 confirmTimer.Dispose();
-                _onDismiss(trackingId); // ack + retrait, déclenche RefreshList via le manager
+                _onDismiss(trackingId);
             };
             confirmTimer.Start();
         }

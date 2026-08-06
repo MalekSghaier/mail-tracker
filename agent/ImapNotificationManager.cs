@@ -16,6 +16,8 @@ namespace MailDetectorAgent
         private static Func<string, Task>? _ackCallback;
         private static Func<string, bool, Task>? _reminderCallback;
         private static string _apiBase = "http://localhost:8000";
+        private static List<ImapAlertDto> VisibleAlerts() =>
+           _pending.Values.Where(a => !_minimizedSet.Contains(a.Key)).ToList();
 
         public static void Configure(Func<string, Task> ackCallback, Func<string, bool, Task> reminderCallback, string apiBase)        {
             _ackCallback = ackCallback;
@@ -157,8 +159,9 @@ namespace MailDetectorAgent
                 if (_minimizedSet.Contains(alert.Key))
                 {
                     CloseSingle();
-                    ShowOrUpdateBadge(count);
-                    _centerForm?.RefreshList(_pending.Values.ToList());
+                    
+                    ShowOrUpdateBadge(VisibleAlerts().Count);
+                    _centerForm?.RefreshList(VisibleAlerts());  
                     return;
                 }
 
@@ -179,12 +182,18 @@ namespace MailDetectorAgent
             }
 
             CloseSingle();
-            ShowOrUpdateBadge(count);
-            _centerForm?.RefreshList(_pending.Values.ToList());
+            ShowOrUpdateBadge(VisibleAlerts().Count);
+            _centerForm?.RefreshList(VisibleAlerts());
         }
 
         private static void ShowOrUpdateBadge(int count)
         {
+            if (count == 0)
+            {
+                CloseBadge();
+                return;
+            }
+        
             if (_badgeForm == null || _badgeForm.IsDisposed)
             {
                 _badgeForm = new BadgeForm(count, OnBadgeClicked);
@@ -194,15 +203,16 @@ namespace MailDetectorAgent
             {
                 _badgeForm.UpdateCount(count);
             }
-        }
+}
 
         private static void OnBadgeClicked()
         {
             if (_centerForm == null || _centerForm.IsDisposed)
             {
                 _centerForm = new ImapNotificationCenterForm(
-                    _pending.Values.ToList(),
+                    VisibleAlerts(), 
                     Dismiss,
+                    MinimizeSingle,
                     GetReminderStatus,
                     SetReminderStatus,
                     _apiBase);

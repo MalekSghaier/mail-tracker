@@ -26,15 +26,19 @@ namespace MailDetectorAgent
         private readonly Func<string, bool?> _getReminderStatus;
         private readonly Action<string, bool> _setReminderStatus;
         private readonly string _apiBase;
+        private readonly Action<string> _onMinimize;
 
         public ImapNotificationCenterForm(
             List<ImapAlertDto> alerts,
             Action<string> onDismiss,
+            Action<string> onMinimize,
+
             Func<string, bool?> getReminderStatus,
             Action<string, bool> setReminderStatus,
             string apiBase)
         {
             _onDismiss = onDismiss;
+            _onMinimize = onMinimize;
             _getReminderStatus = getReminderStatus;
             _setReminderStatus = setReminderStatus;
             _apiBase = apiBase;
@@ -171,7 +175,7 @@ namespace MailDetectorAgent
             };
             close.MouseEnter += (_, _) => close.ForeColor = Color.White;
             close.MouseLeave += (_, _) => close.ForeColor = Color.FromArgb(255, 120, 120, 130);
-            close.Click += (_, _) => _onDismiss(alert.Key);
+            close.Click += (_, _) => _onMinimize(alert.Key);
 
             var content = new Panel
             {
@@ -218,7 +222,13 @@ namespace MailDetectorAgent
             return card;
         }
 
-
+        private void MinimizeCard(Control card, string key)
+        {
+            _list.Controls.Remove(card);
+            card.Dispose();
+            _onMinimize(key);
+            if (_list.Controls.Count == 0) Close();
+        }
 
         private void AnswerAndConfirm(Panel reminderPanel, string key, bool done)
         {

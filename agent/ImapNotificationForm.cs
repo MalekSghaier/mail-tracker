@@ -34,6 +34,7 @@ namespace MailDetectorAgent
         private readonly Action _onUserDismiss;
         private readonly Action _onMinimize;
         private readonly string _detailUrl;
+        
 
         public string Key { get; }
 
