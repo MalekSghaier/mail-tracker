@@ -132,13 +132,14 @@ namespace MailDetectorAgent
             {
                 var alert = _pending.Values.First();
 
-                if (_minimizedSet.Contains(alert.tracking_id))
-                {
-                    CloseSingle();
-                    ShowOrUpdateBadge(count);
-                    _centerForm?.RefreshList(_pending.Values.ToList());
-                    return;
-                }
+            if (_minimizedSet.Contains(alert.tracking_id))
+            {
+                CloseSingle();
+                int visibleCount = VisibleAlerts().Count;
+                ShowOrUpdateBadge(visibleCount);
+                _centerForm?.RefreshList(VisibleAlerts());
+                return;
+            }
 
                 CloseBadge();
                 CloseCenter();
@@ -157,12 +158,22 @@ namespace MailDetectorAgent
             }
 
             CloseSingle();
-            ShowOrUpdateBadge(count);
-            _centerForm?.RefreshList(_pending.Values.ToList());
+            ShowOrUpdateBadge(VisibleAlerts().Count);
+            _centerForm?.RefreshList(VisibleAlerts());
         }
+        private static List<AlertDto> VisibleAlerts() =>
+            _pending.Values.Where(a => !_minimizedSet.Contains(a.tracking_id)).ToList();
+
+
 
         private static void ShowOrUpdateBadge(int count)
         {
+            if (count == 0)
+            {
+                CloseBadge();
+                return;
+            }
+        
             if (_badgeForm == null || _badgeForm.IsDisposed)
             {
                 _badgeForm = new BadgeForm(count, OnBadgeClicked);
@@ -179,8 +190,9 @@ namespace MailDetectorAgent
             if (_centerForm == null || _centerForm.IsDisposed)
             {
                 _centerForm = new NotificationCenterForm(
-                    _pending.Values.ToList(),
+                    VisibleAlerts(), 
                     Dismiss,
+                    MinimizeSingle, 
                     GetReminderStatus,
                     SetReminderStatus,
                     _apiBase);
