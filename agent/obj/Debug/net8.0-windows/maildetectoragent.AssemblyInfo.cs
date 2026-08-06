@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MailDetectorAgent")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+436232de37ca9f0130314b9e5d27a8615f2409ff")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8877d7880da1caa428de74eea7863b1e1ccd5499")]
 [assembly: System.Reflection.AssemblyProductAttribute("MailDetectorAgent")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MailDetectorAgent")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
