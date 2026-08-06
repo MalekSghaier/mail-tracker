@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy import BigInteger
 from db import Base
 
 
@@ -66,6 +67,10 @@ class ReceivedMailLog(Base):
     reminder_done = Column(Boolean, nullable=True)
     reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
     reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
+    uidvalidity = Column(BigInteger, nullable=True)  
+    __table_args__ = (
+        Index("idx_received_mail_account_uid_uidval", "imap_account_id", "message_uid", "uidvalidity"),
+    )
 
 
 class Session(Base):
@@ -92,6 +97,8 @@ class ImapAccount(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=False), server_default=func.now())
     app_user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True)
+    last_uidvalidity = Column(BigInteger, nullable=True)  # pour audit/log uniquement
+
 
 
 class ImapExcludedPattern(Base):
