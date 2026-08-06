@@ -4,6 +4,14 @@ sur des comptes surveillés. Host/port IMAP viennent du .env (config
 d'infrastructure fixe). Les motifs d'expéditeurs à exclure viennent de
 la base (imap_excluded_patterns) — modifiables par un admin sans
 redéploiement.
+
+Suivi d'UIDVALIDITY (correction F10) : les UID IMAP ne sont uniques que
+tant que l'UIDVALIDITY de la boîte ne change pas. Chaque ligne
+ReceivedMailLog est taguée avec l'UIDVALIDITY sous laquelle son UID a
+été observé, et TOUT matching (lecture ET écriture) se fait sur le
+triplet (compte, uid, uidvalidity). Si le serveur réattribue un jour
+les UID, l'ancien enregistrement n'est jamais retrouvé ni écrasé par
+erreur — un nouvel enregistrement est simplement créé.
 """
 import os
 import imaplib
@@ -60,19 +68,62 @@ def _is_excluded_sender(sender: str | None, patterns: list[str]) -> bool:
     return any(pattern in sender_lower for pattern in patterns)
 
 
+def _read_uidvalidity(imap: imaplib.IMAP4_SSL) -> int | None:
+    """Lit l'UIDVALIDITY de la boîte actuellement sélectionnée (doit être
+    appelé juste après un SELECT/EXAMINE)."""
+    typ, data = imap.response("UIDVALIDITY")
+    if not data or data[0] is None:
+        return None
+    try:
+        return int(data[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_current_uidvalidity(account: ImapAccount) -> int | None:
+    """Ouvre une connexion IMAP dédiée juste pour lire l'UIDVALIDITY
+    courante (utilisé par le script de backfill)."""
+    password = decrypt_secret(account.encrypted_password)
+    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    try:
+        imap.login(account.email, password)
+        imap.select("INBOX", readonly=True)
+        return _read_uidvalidity(imap)
+    finally:
+        try:
+            imap.close()
+        except Exception:
+            pass
+        imap.logout()
+
+
 def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
-                        known_uids: set[str], uids_missing_body: set[str]) -> list[dict]:
+                        existing_rows: list[ReceivedMailLog]) -> tuple[list[dict], int | None]:
+    """Se connecte une seule fois, lit l'UIDVALIDITY courante, puis calcule
+    known_uids/uids_missing_body à partir de cette valeur (et non plus
+    passés en paramètre) pour garantir qu'on ne compare jamais des UID
+    appartenant à deux epochs UIDVALIDITY différentes."""
     password = decrypt_secret(account.encrypted_password)
 
     imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     try:
         imap.login(account.email, password)
         imap.select("INBOX", readonly=True)
+        current_uidvalidity = _read_uidvalidity(imap)
+
+        known_uids = {
+            r.message_uid for r in existing_rows
+            if r.uidvalidity == current_uidvalidity
+        }
+        uids_missing_body = {
+            r.message_uid for r in existing_rows
+            if r.uidvalidity == current_uidvalidity and not r.body
+        }
 
         since_date = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%d-%b-%Y")
         status, data = imap.search(None, f'(SINCE "{since_date}")')
         if status != "OK":
-            return []
+            return [], current_uidvalidity
 
         uids = data[0].split()
         results = []
@@ -139,13 +190,14 @@ def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
                 "has_attachment": has_attachment,
                 "needs_update_only": False, "is_known": is_known,
             })
-        return results
+        return results, current_uidvalidity
     finally:
         try:
             imap.close()
         except Exception:
             pass
         imap.logout()
+
 
 def _clean_body_for_summary(text: str) -> str:
     if not text:
@@ -157,7 +209,7 @@ def _clean_body_for_summary(text: str) -> str:
         r"tous droits réservés|all rights reserved|voir dans le navigateur|view in browser).*",
         "", cleaned
     )
-    cleaned = _strip_signature(cleaned)         
+    cleaned = _strip_signature(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:2000]
 
@@ -176,19 +228,35 @@ def sync_account(account_id: int) -> None:
         existing_rows = db.query(ReceivedMailLog).filter(
             ReceivedMailLog.imap_account_id == account.id
         ).all()
-        known_uids = {r.message_uid for r in existing_rows}
-        uids_missing_body = {r.message_uid for r in existing_rows if not r.body}
 
         try:
-            messages = _fetch_inbox_state(account, excluded_patterns, known_uids, uids_missing_body)
+            messages, current_uidvalidity = _fetch_inbox_state(account, excluded_patterns, existing_rows)
         except Exception as exc:
             print(f"[imap_checker] échec connexion IMAP pour {account.email}: {exc}")
             return
+
+        if current_uidvalidity is None:
+            # On ne sait pas sous quelle epoch on se trouve : matcher
+            # quand même serait risquer exactement la corruption qu'on
+            # cherche à éviter. On préfère sauter ce cycle plutôt que de
+            # deviner.
+            print(f"[imap_checker] UIDVALIDITY introuvable pour {account.email}, sync annulée pour ce cycle")
+            return
+
+        if account.last_uidvalidity is not None and current_uidvalidity != account.last_uidvalidity:
+            print(
+                f"[imap_checker] ALERTE: UIDVALIDITY a changé pour {account.email} "
+                f"({account.last_uidvalidity} -> {current_uidvalidity}). "
+                f"Les anciens UID ne seront plus matchés (comportement attendu, pas une erreur)."
+            )
+
+        account.last_uidvalidity = current_uidvalidity
 
         for msg in messages:
             existing = db.query(ReceivedMailLog).filter(
                 ReceivedMailLog.imap_account_id == account.id,
                 ReceivedMailLog.message_uid == msg["uid"],
+                ReceivedMailLog.uidvalidity == current_uidvalidity,
             ).first()
 
             if msg.get("needs_update_only"):
@@ -210,6 +278,7 @@ def sync_account(account_id: int) -> None:
                 entry = ReceivedMailLog(
                     imap_account_id=account.id,
                     message_uid=msg["uid"],
+                    uidvalidity=current_uidvalidity,
                     sender_email=msg.get("sender"),
                     cc_email=msg.get("cc"),
                     subject=msg.get("subject"),
@@ -241,7 +310,8 @@ def sync_account(account_id: int) -> None:
     from tasks import compute_imap_summary_task
     for tracking_id, body, has_attachment in new_summaries + retry_summaries:
         compute_imap_summary_task.delay(tracking_id, body, has_attachment)
-    
+
+
 def _extract_body_text(msg) -> str:
     """Extrait le texte brut du corps (privilégie text/plain, replie sur text/html nettoyé)."""
     if msg.is_multipart():
@@ -295,19 +365,29 @@ def _has_attachment(msg) -> bool:
     return False
 
 
-_SIGNATURE_PATTERN = re.compile(
-    r"(?i)\s*(cordialement|bien à vous|salutations|regards|"
-    r"ing[ée]nieur[^+]*|\+?\d[\d\s]{7,}\d).*$"
+_SIGNATURE_MARKERS = re.compile(
+    r"(?i)^\s*(cordialement|bien à vous|salutations professionnelles|"
+    r"best regards|sincerely)\b"
 )
+_SIGNATURE_PHONE = re.compile(r"^\s*\+?\d[\d\s]{7,}\d\s*$")
+
 
 def _strip_signature(text: str) -> str:
-    """Coupe le texte au premier indice de bloc signature détecté
-    (formule de politesse, titre de poste, numéro de téléphone)."""
-    match = re.search(
-        r"(?i)(cordialement|bien à vous|salutations professionnelles|"
-        r"best regards|sincerely|\+?\d[\d\s]{7,}\d)",
-        text,
-    )
-    if match:
-        return text[:match.start()].strip()
+    """Coupe le texte au début du bloc signature, détecté uniquement
+    dans les dernières lignes du message (pas en recherche libre sur
+    tout le corps). Évite de tronquer du contenu légitime contenant
+    incidemment un mot-clé de signature ou une suite de chiffres
+    (référence, IBAN partiel, etc.) plus tôt dans le texte."""
+    if not text:
+        return text
+
+    lines = text.split("\n")
+    # Fenêtre de recherche : dernier tiers du message, au moins 6 lignes
+    tail_start = max(0, len(lines) - max(6, len(lines) // 3))
+
+    for i in range(tail_start, len(lines)):
+        line = lines[i]
+        if _SIGNATURE_MARKERS.match(line) or _SIGNATURE_PHONE.match(line):
+            return "\n".join(lines[:i]).strip()
+
     return text
