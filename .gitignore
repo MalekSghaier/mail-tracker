@@ -29,3 +29,8 @@ celerybeat-schedule.bak
 celerybeat-schedule.dat
 celerybeat-schedule.dir
 *.log
+
+
+# plusieurs Mo, régénérés à chaque build.
+agent/bin/
+agent/obj/
