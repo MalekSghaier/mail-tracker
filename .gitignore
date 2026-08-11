@@ -21,3 +21,11 @@ __pycache__/
 .venv/
 venv/
 
+
+### Runtime artifacts (Redis / Celery / logs)
+dump.rdb
+celerybeat-schedule
+celerybeat-schedule.bak
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+*.log
