@@ -34,6 +34,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.reset_expired_imap_reminders",
         "schedule": 30.0,
     },
+        "cleanup-stale-sessions-daily": {
+        "task": "tasks.cleanup_stale_sessions",
+        "schedule": 86400.0,  # une fois par jour
+    },
 }
 
 celery_app.conf.task_routes = {
@@ -42,7 +46,8 @@ celery_app.conf.task_routes = {
     "tasks.reset_expired_reminders": {"queue": "maintenance"},
     "tasks.reset_expired_imap_reminders": {"queue": "maintenance"},
     "tasks.compute_summary_task": {"queue": "maintenance"},      
-    "tasks.compute_imap_summary_task": {"queue": "maintenance"},   
+    "tasks.compute_imap_summary_task": {"queue": "maintenance"},  
+    "tasks.cleanup_stale_sessions": {"queue": "maintenance"}, 
 }
 
 
@@ -82,7 +87,11 @@ def compute_imap_summary_task(self, tracking_id: str, body: str, has_attachment:
             if has_attachment else ""
         )
     else:
-        ai_summary = generer_resume(body).strip() + piece_jointe_note
+        try:
+            ai_summary = generer_resume(body).strip() + piece_jointe_note
+        except Exception as exc:
+            print(f"[compute_imap_summary_task] tentative échouée pour {tracking_id}: {exc}")
+            raise self.retry(exc=exc)
 
     with get_db() as db:
         mail = db.query(ReceivedMailLog).filter(ReceivedMailLog.tracking_id == uuid.UUID(tracking_id)).first()
@@ -173,3 +182,70 @@ def reset_expired_imap_reminders():
         invalidate_prefix("imap-mail:")
 
     return {"ok": True, "updated": updated}
+
+def cleanup_stale_sessions():
+    """F36 : purge périodique de la table sessions.
+    1. Supprime toujours les sessions dont le compte lié (admin ou user)
+       est désactivé ou n'existe plus — ces sessions sont déjà inutilisables
+       (is_active revérifié à chaque requête dans auth.py), donc les garder
+       n'a aucune valeur fonctionnelle, juste de l'accumulation.
+    2. Supprime en plus les sessions plus vieilles que SESSION_MAX_AGE_DAYS
+       si ce réglage est explicitement activé (> 0 dans .env) — désactivé
+       par défaut pour respecter le choix produit "pas d'expiration de
+       session" documenté dans auth.py."""
+    from db import get_db
+    from models import Session, Admin, AppUser
+    from datetime import datetime, timedelta
+
+    session_max_age_days = int(os.getenv("SESSION_MAX_AGE_DAYS", 0))
+    deleted_count = 0
+
+    with get_db() as db:
+        # Sessions admin dont le compte est désactivé
+        inactive_admin_ids = [
+            a.id for a in db.query(Admin.id).filter(Admin.is_active.is_(False)).all()
+        ]
+        if inactive_admin_ids:
+            deleted_count += (
+                db.query(Session)
+                .filter(Session.admin_id.in_(inactive_admin_ids))
+                .delete(synchronize_session=False)
+            )
+
+        # Sessions admin orphelines (compte supprimé)
+        deleted_count += (
+            db.query(Session)
+            .filter(Session.admin_id.isnot(None))
+            .filter(~Session.admin_id.in_(db.query(Admin.id)))
+            .delete(synchronize_session=False)
+        )
+
+        # Sessions user dont le compte est désactivé
+        inactive_user_ids = [
+            u.id for u in db.query(AppUser.id).filter(AppUser.is_active.is_(False)).all()
+        ]
+        if inactive_user_ids:
+            deleted_count += (
+                db.query(Session)
+                .filter(Session.user_id.in_(inactive_user_ids))
+                .delete(synchronize_session=False)
+            )
+
+        # Sessions user orphelines (compte supprimé)
+        deleted_count += (
+            db.query(Session)
+            .filter(Session.user_id.isnot(None))
+            .filter(~Session.user_id.in_(db.query(AppUser.id)))
+            .delete(synchronize_session=False)
+        )
+
+        # Rétention par âge, uniquement si explicitement activée
+        if session_max_age_days > 0:
+            cutoff = datetime.now() - timedelta(days=session_max_age_days)
+            deleted_count += (
+                db.query(Session)
+                .filter(Session.created_at < cutoff)
+                .delete(synchronize_session=False)
+            )
+
+    return {"ok": True, "deleted": deleted_count}

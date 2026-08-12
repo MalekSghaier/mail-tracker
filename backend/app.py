@@ -1,5 +1,6 @@
 import html as html_module
 import os
+import hmac
 import uuid as uuid_lib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -13,9 +14,10 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 from tasks import compute_summary_task
 from contextlib import asynccontextmanager
 from sqlalchemy import or_
-from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog,ImapAccount, ReceivedMailLog, ImapExcludedPattern
+from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import encrypt_secret
 from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL
+
 
 
 load_dotenv()
@@ -33,7 +35,7 @@ app.include_router(admin_router)
 def verify_milter_secret(x_milter_secret: str = Header(None)):
     if not MILTER_SHARED_SECRET:
         raise HTTPException(status_code=500, detail="MILTER_SHARED_SECRET non configuré côté serveur")
-    if x_milter_secret != MILTER_SHARED_SECRET:
+    if not x_milter_secret or not hmac.compare_digest(x_milter_secret, MILTER_SHARED_SECRET):
         raise HTTPException(status_code=401, detail="Secret invalide")
 
 
@@ -114,6 +116,27 @@ def _apply_role_filter(query, user: dict, db):
     if not email:
         return query.filter(False)
     return query.filter(EmailLog.sender_email == email)
+
+def _compute_sort_key(reminder_done, acked, date_value, opened_at=None):
+    """Clé de tri commune aux listes de mails (envoyés ou reçus) :
+    priorise les rappels en échec, puis en attente, puis vus sans réponse,
+    puis ouverts sans réponse (si applicable), puis rappels faits, puis le reste.
+    Trie ensuite par date décroissante à l'intérieur de chaque priorité."""
+    if reminder_done is False:
+        priority = 1
+    elif reminder_done is None and not acked:
+        priority = 2
+    elif reminder_done is None and acked:
+        priority = 3
+    elif opened_at is not None and reminder_done is None:
+        priority = 4
+    elif reminder_done is True:
+        priority = 5
+    else:
+        priority = 6
+    return (priority, -(date_value.timestamp() if date_value else 0))
+
+
 
 @app.get("/api/alerts")
 def get_alerts(user=Depends(get_current_user)):
@@ -286,22 +309,10 @@ def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0
         query = _apply_role_filter(query, user, db)
         rows = query.all()
 
-        def sort_key(r):
-            if r.reminder_done is False:
-                priority = 1
-            elif r.reminder_done is None and not r.alert_acked:
-                priority = 2
-            elif r.reminder_done is None and r.alert_acked:
-                priority = 3
-            elif r.opened_at is not None and r.reminder_done is None:
-                priority = 4
-            elif r.reminder_done is True:
-                priority = 5
-            else:
-                priority = 6
-            return (priority, -(r.sent_at.timestamp() if r.sent_at else 0))
-
-        rows = sorted(rows, key=sort_key)
+        rows = sorted(
+            rows,
+            key=lambda r: _compute_sort_key(r.reminder_done, r.alert_acked, r.sent_at, r.opened_at)
+        )
         total = len(rows)
         rows = rows[offset:offset + limit]
 
@@ -562,27 +573,15 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
-
+        
         history_query = db.query(EmailLog)
         history_query = _apply_role_filter(history_query, user, db)
         history_rows = history_query.all()
 
-        def sort_key(r):
-            if r.reminder_done is False:
-                priority = 1
-            elif r.reminder_done is None and not r.alert_acked:
-                priority = 2
-            elif r.reminder_done is None and r.alert_acked:
-                priority = 3
-            elif r.opened_at is not None and r.reminder_done is None:
-                priority = 4
-            elif r.reminder_done is True:
-                priority = 5
-            else:
-                priority = 6
-            return (priority, -(r.sent_at.timestamp() if r.sent_at else 0))
-
-        history_rows = sorted(history_rows, key=sort_key)
+        history_rows = sorted(
+            history_rows,
+            key=lambda r: _compute_sort_key(r.reminder_done, r.alert_acked, r.sent_at, r.opened_at)
+        )
 
         mail_data = {
             "tracking_id": str(mail.tracking_id), "sender": mail.sender_email,
@@ -819,17 +818,7 @@ def imap_finally_done(tracking_id: str, user=Depends(get_current_user)):
 
 def _imap_history_sort_key(row):
     mail = row[0]
-    if mail.reminder_done is False:
-        priority = 1
-    elif mail.reminder_done is None and not mail.supervisor_acked:
-        priority = 2
-    elif mail.reminder_done is None and mail.supervisor_acked:
-        priority = 3
-    elif mail.reminder_done is True:
-        priority = 5
-    else:
-        priority = 6
-    return (priority, -(mail.received_at.timestamp() if mail.received_at else 0))
+    return _compute_sort_key(mail.reminder_done, mail.supervisor_acked, mail.received_at)
 
 @app.get("/api/imap-history")
 def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0):
@@ -1180,45 +1169,6 @@ setInterval(() => {{ if (token) loadMail(); }}, 3000);
 </script>
 </body>
 </html>""")
-
-def _reminder_html(tracking_id: str, reminder_done, reminder_at, fmt_date) -> str:
-    """Génère le bloc HTML du rappel selon l'état actuel."""
-    tid = tracking_id
-    if reminder_done is True:
-        return (
-            f'<div class="reminder-done reminder-yes">'
-            f'<span class="reminder-icon">✓</span>'
-            f'<span>Rappel effectué — répondu le {fmt_date(reminder_at)}</span>'
-            f'</div>'
-        )
-    if reminder_done is False:
-        return (
-            f'<div class="reminder-not-done">'
-            f'<div class="reminder-not-done-row">'
-            f'<div class="reminder-done reminder-no">'
-            f'<span class="reminder-icon">✗</span>'
-            f'<span>Rappel non effectué — répondu le {fmt_date(reminder_at)}</span>'
-            f'</div>'
-            f'<button class="btn-finally-done" onclick="finallyDone(\'{tid}\')">'
-            f'<span>✓</span> J\'ai finalement fait le rappel'
-            f'</button>'
-            f'</div>'
-            f'<div class="recheck-notice">↻ Une nouvelle alerte sera envoyée automatiquement.</div>'
-            f'</div>'
-        )
-    return (
-        f'<div class="reminder-question">'
-        f'<span class="reminder-label">Rappel effectué ?</span>'
-        f'<div class="reminder-buttons">'
-        f'<button class="btn-reminder btn-oui" onclick="submitReminder(\'{tid}\', true)">'
-        f'<span class="btn-check">✓</span> Oui'
-        f'</button>'
-        f'<button class="btn-reminder btn-non" onclick="submitReminder(\'{tid}\', false)">'
-        f'<span class="btn-cross">✗</span> Non'
-        f'</button>'
-        f'</div>'
-        f'</div>'
-    )
 
 
 @app.get("/mail/{tracking_id}", response_class=HTMLResponse)

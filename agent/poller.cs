@@ -62,7 +62,6 @@ namespace MailDetectorAgent
                 _apiBase);
         }
 
-        /// <summary>Attache le token JWT à toutes les futures requêtes.</summary>
         public void SetAuthToken(string token)
         {
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);

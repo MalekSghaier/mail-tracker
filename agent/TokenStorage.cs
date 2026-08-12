@@ -5,12 +5,7 @@ using System.Text;
 
 namespace MailDetectorAgent
 {
-    /// <summary>
-    /// Stocke le token JWT et le rôle du compte localement, chiffrés avec
-    /// DPAPI (lié au compte Windows de l'utilisateur courant). Permet de
-    /// ne demander le login qu'une seule fois par utilisateur/PC —
-    /// personne d'autre que ce compte Windows ne peut déchiffrer les fichiers.
-    /// </summary>
+
     public static class TokenStorage
     {
         private static readonly string FolderPath = Path.Combine(

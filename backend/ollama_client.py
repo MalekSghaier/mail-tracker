@@ -5,8 +5,13 @@ Nécessite qu'Ollama tourne déjà (ollama serve) avec le modèle téléchargé.
 import re
 import requests
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen2.5:3b"  # Changé de llama3.2:1b à qwen2.5:3b
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
 # Mots à ignorer dans la vérification de cohérence
 STOPWORDS = {
