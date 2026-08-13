@@ -114,9 +114,9 @@ namespace MailDetectorAgent
             _list = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                AutoScroll = true,
+                //FlowDirection = FlowDirection.TopDown,
+                //WrapContents = false,
+                //AutoScroll = true,
                 Padding = new Padding(16, 12, 16, 16),
                 BackColor = PanelBg,
             };
@@ -124,7 +124,7 @@ namespace MailDetectorAgent
             Controls.Add(_list);
             Controls.Add(headerBar);
 
-            Deactivate += (_, _) => Close();
+            //Deactivate += (_, _) => Close();
 
             RefreshList(alerts);
         }
@@ -213,9 +213,12 @@ namespace MailDetectorAgent
             var from = MakeLine($"De : {alert.sender}", MetaColor, new Font("Segoe UI", 8.25f), 17);
             var to = MakeLine($"À : {alert.recipient}", MetaColor, new Font("Segoe UI", 8.25f), 17);
 
-            var summary = MakeLine("Résumé : " + alert.summary, SummaryColor,
-                new Font("Segoe UI", 8.25f), 40, fill: true);
+            var summaryFont = new Font("Segoe UI", 8.25f);
+            int summaryWidth = CardWidth - 4 /* accent bar */ - 16 - 14 /* padding content */ - 4 /* marge de sécurité */;
+            var summary = MakeLine("Résumé : " + FormatSummary(alert.summary, summaryFont, summaryWidth, 40), SummaryColor,
+                summaryFont, 40, fill: true);
             summary.Padding = new Padding(0, 6, 0, 0);
+            summary.AutoEllipsis = true;
 
             content.Controls.Add(summary);
             if (hasCc)
@@ -245,6 +248,41 @@ namespace MailDetectorAgent
 
             return card;
         }
+
+                private static string FormatSummary(string summary, Font font, int width, int height)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+                return "en cours de génération…";
+            return TruncateToFit(summary, font, new Size(width, height), "Résumé : ");
+        }
+        
+        private static string TruncateToFit(string text, Font font, Size maxSize, string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+        
+            const string ellipsis = "..."; 
+        
+            var flags = TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl;
+            var availableSize = new Size(maxSize.Width, maxSize.Height);
+        
+            var fullSize = TextRenderer.MeasureText(prefix + text, font, availableSize, flags);
+            if (fullSize.Height <= maxSize.Height) return text;
+        
+            string truncated = text;
+            while (truncated.Length > 1)
+            {
+                truncated = truncated[..^1];
+                string candidate = truncated.TrimEnd() + ellipsis;
+                var size = TextRenderer.MeasureText(prefix + candidate, font, availableSize, flags);
+                if (size.Height <= maxSize.Height)
+                {
+                    return candidate;
+                }
+            }
+            return ellipsis;
+        }
+
+
         private void MinimizeCard(Control card, string trackingId)
         {
             _list.Controls.Remove(card);
@@ -357,7 +395,7 @@ namespace MailDetectorAgent
                 Font = font,
                 Dock = fill ? DockStyle.Fill : DockStyle.Top,
                 Height = height,
-                AutoEllipsis = true,
+                
             };
         }
 

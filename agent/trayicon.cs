@@ -11,6 +11,8 @@ namespace MailDetectorAgent
     {
         private readonly NotifyIcon _trayIcon;
         private readonly Poller _poller;
+        private ToolStripMenuItem? _refreshMenuItem;
+
 
         public TrayIconApp()
         {
@@ -22,6 +24,11 @@ namespace MailDetectorAgent
             };
 
             var menu = new ContextMenuStrip();
+            _refreshMenuItem = new ToolStripMenuItem("Actualiser maintenant", null, async (_, _) => await RefreshNowAsync());
+            menu.Items.Add(_refreshMenuItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("À propos", null, (_, _) => ShowAbout());
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Se déconnecter", null, async (_, _) => await LogoutAsync());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quitter", null, (_, _) => Application.Exit());
@@ -39,6 +46,33 @@ namespace MailDetectorAgent
 
             _trayIcon.Visible = true;
             _poller.Start();
+        }
+
+                private async Task RefreshNowAsync()
+        {
+            if (_refreshMenuItem == null) return;
+
+            _refreshMenuItem.Enabled = false;
+            try
+            {
+                await _poller.CheckNowAsync();
+            }
+            catch (Exception)
+            {
+                // Les erreurs réseau sont déjà loguées côté Poller — pas besoin
+                // de bloquer l'utilisateur avec une popup pour un simple échec
+                // de rafraîchissement manuel.
+            }
+            finally
+            {
+                _refreshMenuItem.Enabled = true;
+            }
+        }
+
+        private void ShowAbout()
+        {
+            using var about = new AboutForm();
+            about.ShowDialog();
         }
 
         private async Task LogoutAsync()

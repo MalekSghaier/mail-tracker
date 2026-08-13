@@ -31,8 +31,6 @@ namespace MailDetectorAgent
         private static readonly Color ValidatedColor = Color.FromArgb(255, 72, 178, 128);
         private static readonly Color NotValidatedColor = Color.FromArgb(255, 212, 96, 96);
 
-        private static int _openCount = 0;
-        private readonly int _slot;
         private readonly System.Windows.Forms.Timer _fadeTimer;
         private readonly Panel _reminderPanel;
         private bool? _reminderStatus;
@@ -45,7 +43,6 @@ namespace MailDetectorAgent
 
         public NotificationForm(AlertDto alert, Action onUserDismiss, Action onMinimize, bool? reminderStatus, Action<bool> onAnswer, string apiBase)
         {
-            _slot = _openCount++;
             _reminderStatus = reminderStatus;
             _onAnswer = onAnswer;
             _onUserDismiss = onUserDismiss;
@@ -106,7 +103,7 @@ namespace MailDetectorAgent
         {
             var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
             int x = workingArea.Right - Width - 14;
-            int y = workingArea.Bottom - Height - 14 - (_slot * (Height + 10));
+            int y = workingArea.Bottom - Height - 14;
             Location = new Point(x, Math.Max(y, 10));
         }
 
@@ -354,7 +351,6 @@ namespace MailDetectorAgent
         {
             if (disposing)
             {
-                _openCount = Math.Max(0, _openCount - 1);
                 _fadeTimer?.Dispose();
             }
             base.Dispose(disposing);

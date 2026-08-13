@@ -108,6 +108,10 @@ namespace MailDetectorAgent
         }
 
         public void Stop() => _timer?.Stop();
+        public async Task CheckNowAsync()
+        {
+            await CheckImapAlertsAsync();
+        }
 
         private bool _busy = false;
 
@@ -161,6 +165,7 @@ namespace MailDetectorAgent
             if (_accountRole != "dept_admin" && _accountRole != "superadmin") return;
             if (_imapBusy) return;
             _imapBusy = true;
+            Log.Information("[TEST F43] Cycle de verification IMAP declenche");
 
             try
             {
