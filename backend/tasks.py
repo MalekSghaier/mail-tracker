@@ -183,6 +183,8 @@ def reset_expired_imap_reminders():
 
     return {"ok": True, "updated": updated}
 
+
+@celery_app.task
 def cleanup_stale_sessions():
     """F36 : purge périodique de la table sessions.
     1. Supprime toujours les sessions dont le compte lié (admin ou user)

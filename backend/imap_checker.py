@@ -38,6 +38,7 @@ if not IMAP_HOST:
     )
 
 LOOKBACK_DAYS = 30
+RETRY_COOLDOWN_MINUTES = 10
 
 
 def _decode_mime_str(value: str | None) -> str:
@@ -273,6 +274,7 @@ def sync_account(account_id: int) -> None:
                     existing.cc_email = msg.get("cc")
                     if not existing.subject:
                         existing.subject = msg.get("subject")
+                    existing.summary_requested_at = datetime.now()
                     new_summaries.append((str(existing.tracking_id), msg["body"], msg.get("has_attachment", False)))
             else:
                 entry = ReceivedMailLog(
@@ -289,22 +291,28 @@ def sync_account(account_id: int) -> None:
                 db.add(entry)
                 db.flush()
                 if msg.get("body") or msg.get("has_attachment"):
+                    entry.summary_requested_at = datetime.now()
                     new_summaries.append((str(entry.tracking_id), msg["body"], msg.get("has_attachment", False)))
 
+        
         stuck = (
             db.query(ReceivedMailLog)
             .filter(
                 ReceivedMailLog.imap_account_id == account.id,
                 ReceivedMailLog.ai_summary.is_(None),
-                ReceivedMailLog.is_seen.is_(False),
                 ReceivedMailLog.body.isnot(None),
                 ReceivedMailLog.body != "",
+            )
+            .filter(
+                (ReceivedMailLog.summary_requested_at.is_(None))
+                | (ReceivedMailLog.summary_requested_at < datetime.now() - timedelta(minutes=RETRY_COOLDOWN_MINUTES))
             )
             .all()
         )
         for entry in stuck:
             already_queued = any(tid == str(entry.tracking_id) for tid, _, _ in new_summaries)
             if not already_queued:
+                entry.summary_requested_at = datetime.now()
                 retry_summaries.append((str(entry.tracking_id), entry.body, False))
 
     from tasks import compute_imap_summary_task

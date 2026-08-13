@@ -59,7 +59,7 @@ class ReceivedMailLog(Base):
     cc_email = Column(String, nullable=True)        
     subject = Column(String, nullable=True)
     body = Column(Text, nullable=True)               
-    ai_summary = Column(Text, nullable=True)          
+    ai_summary = Column(Text, nullable=True)        
     received_at = Column(DateTime(timezone=False), nullable=True, index=True)
     is_seen = Column(Boolean, default=False, nullable=False)
     last_checked_at = Column(DateTime(timezone=False), server_default=func.now())
@@ -68,6 +68,7 @@ class ReceivedMailLog(Base):
     reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
     reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
     uidvalidity = Column(BigInteger, nullable=True)  
+    summary_requested_at = Column(DateTime(timezone=False), nullable=True)
     __table_args__ = (
         Index("idx_received_mail_account_uid_uidval", "imap_account_id", "message_uid", "uidvalidity"),
     )
