@@ -31,6 +31,14 @@ PIXEL_ANTISCAN_DELAY_SECONDS = 5
 app = FastAPI(title="Mail Detector")
 app.include_router(admin_router)
 
+def parse_tracking_id(tracking_id: str) -> uuid_lib.UUID:
+    """Convertit un tracking_id en UUID, ou lève un 404 propre si le format
+    est invalide — évite les 500 bruts de uuid.UUID() sur un input externe."""
+    try:
+        return uuid_lib.UUID(tracking_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Identifiant invalide")
+
 
 def verify_milter_secret(x_milter_secret: str = Header(None)):
     if not MILTER_SHARED_SECRET:
@@ -78,7 +86,7 @@ def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):
 @app.get("/track/{tracking_id}")
 def track(tracking_id: str):
     with get_db() as db:
-        mail = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)).first()
+        mail = db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id)).first()
         if mail and mail.opened_at is None and mail.sent_at:
             cutoff = datetime.now() - timedelta(seconds=PIXEL_ANTISCAN_DELAY_SECONDS)
             if mail.sent_at < cutoff:
@@ -192,7 +200,7 @@ def verify_token(user=Depends(get_current_user)):
 @app.post("/api/alerts/{tracking_id}/ack")
 def ack_alert(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id)), user, db)
+        query = _apply_role_filter(db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id)), user, db)
         mail = query.first()
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
@@ -209,7 +217,7 @@ class ReminderAnswer(BaseModel):
 @app.post("/api/alerts/{tracking_id}/reminder")
 def set_reminder(tracking_id: str, payload: ReminderAnswer, user=Depends(get_current_user)):
     with get_db() as db:
-        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id))
         query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
@@ -248,7 +256,7 @@ def get_states(payload: TrackingIds, user=Depends(get_current_user)):
     missing_ids = [i for i in ids_str if i not in result]
     if missing_ids:
         with get_db() as db:
-            uuids = [uuid_lib.UUID(i) for i in missing_ids]
+            uuids = [parse_tracking_id(i) for i in missing_ids]
             query = db.query(EmailLog).filter(EmailLog.tracking_id.in_(uuids))
             query = _apply_role_filter(query, user, db)
             rows = query.all()
@@ -264,7 +272,7 @@ def get_states(payload: TrackingIds, user=Depends(get_current_user)):
 @app.get("/api/alerts/{tracking_id}/status")
 def get_alert_status(tracking_id: str, user=Depends(get_current_user)):
     with get_db() as db:
-        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id))
         query = _apply_role_filter(query, user, db)
         mail = query.first()
 
@@ -282,7 +290,7 @@ def get_alert_status(tracking_id: str, user=Depends(get_current_user)):
 def finally_done(tracking_id: str, user=Depends(get_current_user)):
 
     with get_db() as db:
-        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id))
         query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
@@ -568,7 +576,7 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
     if cached is not None:
         return cached
     with get_db() as db:
-        query = db.query(EmailLog).filter(EmailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = db.query(EmailLog).filter(EmailLog.tracking_id == parse_tracking_id(tracking_id))
         query = _apply_role_filter(query, user, db)
         mail = query.first()
         if not mail:
@@ -686,7 +694,7 @@ def _own_imap_mail_query(db, user, tracking_id: str | None = None):
     query = _apply_imap_role_filter(query, user)
     query = _apply_excluded_patterns_filter(query, db) 
     if tracking_id is not None:
-        query = query.filter(ReceivedMailLog.tracking_id == uuid_lib.UUID(tracking_id))
+        query = query.filter(ReceivedMailLog.tracking_id == parse_tracking_id(tracking_id))
     return query
 
 

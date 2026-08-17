@@ -7,8 +7,6 @@ node_modules/
 .env.*
 .env.local
 
-
-
 ### OS / Editor files
 .DS_Store
 Thumbs.db
@@ -21,20 +19,17 @@ __pycache__/
 .venv/
 venv/
 
-
 ### Runtime artifacts (Redis / Celery / logs)
--dump.rdb
-+*.rdb
- celerybeat-schedule
- celerybeat-schedule.bak
- celerybeat-schedule.dat
- celerybeat-schedule.dir
- *.log
-+
-+### Secrets — ne jamais committer
-+login.json
-+**/login.json
+*.rdb
+celerybeat-schedule
+celerybeat-schedule.bak
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+*.log
 
+### Secrets — ne jamais committer
+login.json
+**/login.json
 
 # plusieurs Mo, régénérés à chaque build.
 agent/bin/
