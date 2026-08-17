@@ -4,19 +4,19 @@ import hmac
 import uuid as uuid_lib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks,Response, Cookie
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from ollama_client import generer_resume
 from admin_page import router as admin_router
 from db import get_db
-from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, revoke_token
+from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, revoke_token ,set_session_cookie, clear_session_cookie
 from tasks import compute_summary_task
 from contextlib import asynccontextmanager
 from sqlalchemy import or_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import encrypt_secret
-from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL
+from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL , check_rate_limit
 
 
 
@@ -27,6 +27,9 @@ THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
 IMAP_ALERT_THRESHOLD_MINUTES = int(os.getenv("IMAP_ALERT_THRESHOLD_MINUTES", 2))  # Normalement devrais etre 48h mais cas de test
 RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
 PIXEL_ANTISCAN_DELAY_SECONDS = 5
+MILTER_RATE_LIMIT_MAX = int(os.getenv("MILTER_RATE_LIMIT_MAX", 60))
+MILTER_RATE_LIMIT_WINDOW = int(os.getenv("MILTER_RATE_LIMIT_WINDOW_SECONDS", 60))
+
 
 app = FastAPI(title="Mail Detector")
 app.include_router(admin_router)
@@ -39,6 +42,9 @@ def parse_tracking_id(tracking_id: str) -> uuid_lib.UUID:
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=404, detail="Identifiant invalide")
 
+def rate_limit_milter():
+    if not check_rate_limit("ratelimit:milter:register", MILTER_RATE_LIMIT_MAX, MILTER_RATE_LIMIT_WINDOW):
+        raise HTTPException(status_code=429, detail="Trop de requêtes, réessayez plus tard.")
 
 def verify_milter_secret(x_milter_secret: str = Header(None)):
     if not MILTER_SHARED_SECRET:
@@ -65,7 +71,7 @@ def health():
 
 
 @app.post("/api/emails/register")
-def register_email(payload: EmailRegister, _=Depends(verify_milter_secret)):  
+def register_email(payload: EmailRegister, _=Depends(verify_milter_secret), __=Depends(rate_limit_milter)):  
     tracking_id = str(uuid_lib.uuid4())
 
     with get_db() as db:
@@ -358,7 +364,7 @@ class UserCreate(BaseModel):
     account_role: str = "employee"
 
 @app.post("/api/admin/login")
-def admin_login(payload: AdminLogin):
+def admin_login(payload: AdminLogin, response: Response):
     with get_db() as db:
         admin = db.query(Admin).filter(Admin.username == payload.username).first()
         if not admin or not verify_password(payload.password, admin.password_hash):
@@ -366,7 +372,8 @@ def admin_login(payload: AdminLogin):
         admin_id = admin.id
 
     token = create_access_token(subject=payload.username, role="admin", extra={"admin_id": admin_id})
-    return {"access_token": token, "token_type": "bearer"}
+    set_session_cookie(response, token)
+    return {"username": payload.username}
 
 @app.post("/api/admin/users")
 def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
@@ -433,7 +440,6 @@ def list_users(admin=Depends(get_current_admin), limit: int = 50, offset: int = 
 
 @app.get("/api/admin/imap-alerts")
 def get_imap_alerts(admin=Depends(get_current_admin)):
-    from datetime import datetime, timedelta
 
     with get_db() as db:
         cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
@@ -562,11 +568,10 @@ def user_login(payload: UserLogin):
 
 
 @app.post("/api/auth/logout")
-def logout(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token manquant")
-    token = authorization.removeprefix("Bearer ")
-    revoke_token(token)
+def logout(response: Response, session_token: str | None = Cookie(default=None, alias="session_token")):
+    if session_token:
+        revoke_token(session_token)
+    clear_session_cookie(response)
     return {"ok": True}
 
 @app.get("/api/mail/{tracking_id}")

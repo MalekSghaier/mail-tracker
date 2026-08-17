@@ -17,6 +17,7 @@ import os
 import imaplib
 import email
 import re
+import logging
 from email.header import decode_header
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -24,6 +25,9 @@ from dotenv import load_dotenv
 from db import get_db
 from models import ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import decrypt_secret
+
+
+logger = logging.getLogger(__name__)
 
 
 load_dotenv()
@@ -37,8 +41,8 @@ if not IMAP_HOST:
         "IMAP_PORT avant de lancer la synchronisation IMAP."
     )
 
-LOOKBACK_DAYS = 30
-RETRY_COOLDOWN_MINUTES = 10
+LOOKBACK_DAYS = int(os.getenv("IMAP_LOOKBACK_DAYS", 30))
+RETRY_COOLDOWN_MINUTES = int(os.getenv("IMAP_RETRY_COOLDOWN_MINUTES", 10))
 
 
 def _decode_mime_str(value: str | None) -> str:
@@ -233,7 +237,7 @@ def sync_account(account_id: int) -> None:
         try:
             messages, current_uidvalidity = _fetch_inbox_state(account, excluded_patterns, existing_rows)
         except Exception as exc:
-            print(f"[imap_checker] échec connexion IMAP pour {account.email}: {exc}")
+            logger.error("Échec connexion IMAP pour %s", account.email, exc_info=True)
             return
 
         if current_uidvalidity is None:
@@ -241,14 +245,13 @@ def sync_account(account_id: int) -> None:
             # quand même serait risquer exactement la corruption qu'on
             # cherche à éviter. On préfère sauter ce cycle plutôt que de
             # deviner.
-            print(f"[imap_checker] UIDVALIDITY introuvable pour {account.email}, sync annulée pour ce cycle")
+            logger.warning("UIDVALIDITY introuvable pour %s, sync annulée pour ce cycle", account.email)
             return
 
         if account.last_uidvalidity is not None and current_uidvalidity != account.last_uidvalidity:
-            print(
-                f"[imap_checker] ALERTE: UIDVALIDITY a changé pour {account.email} "
-                f"({account.last_uidvalidity} -> {current_uidvalidity}). "
-                f"Les anciens UID ne seront plus matchés (comportement attendu, pas une erreur)."
+            logger.warning(
+                "UIDVALIDITY a changé pour %s (%s -> %s). Les anciens UID ne seront plus matchés (comportement attendu, pas une erreur).",
+                account.email, account.last_uidvalidity, current_uidvalidity,
             )
 
         account.last_uidvalidity = current_uidvalidity

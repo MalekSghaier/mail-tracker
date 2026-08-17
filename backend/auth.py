@@ -4,13 +4,11 @@ import hashlib
 from datetime import datetime, timezone
 
 import bcrypt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, status, Cookie, Response, Header
 
 from db import get_db
 from models import Admin, AppUser, Session
 
-bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # ---------- mots de passe ----------
@@ -89,23 +87,47 @@ def _load_session(token: str) -> dict:
         return payload
 
 
+COOKIE_NAME = "session_token"
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=False,       # true en prod, False en dev (localhost)
+        samesite="strict",
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(COOKIE_NAME, path="/")
+
 # ---------- dependencies FastAPI ----------
 
-def _get_payload(creds: HTTPAuthorizationCredentials | None) -> dict:
-    if creds is None or not creds.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentification requise",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return _load_session(creds.credentials)
+def _resolve_token(
+    session_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    authorization: str | None = Header(default=None),
+) -> str | None:
+    """Le cookie httpOnly (panel admin) est prioritaire ; le header
+    Authorization reste supporté pour les pages employé (/mail, /imap-mail)
+    qui utilisent encore localStorage — non modifiées pour l'instant."""
+    if session_token:
+        return session_token
+    if authorization and authorization.startswith("Bearer "):
+        return authorization.removeprefix("Bearer ")
+    return None
 
 
-def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
-    """Valide le token, puis relit systématiquement is_active en base
-    pour ce compte admin — même logique que get_current_user, pour que
-    la désactivation d'un admin soit effective immédiatement."""
-    payload = _get_payload(creds)
+def get_current_admin(
+    session_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict:
+    """Le panel admin est désormais 100% cookie httpOnly — pas de fallback
+    sur le header Authorization ici, contrairement à get_current_user."""
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    payload = _load_session(session_token)
+
     if payload.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Accès admin requis")
 
@@ -122,8 +144,12 @@ def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer_schem
 
     return payload
 
-def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
-    payload = _get_payload(creds)
+
+def get_current_user(token: str | None = Depends(_resolve_token)) -> dict:
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    payload = _load_session(token)
+
     if payload.get("role") not in ("admin", "user"):
         raise HTTPException(status_code=403, detail="Accès refusé")
 

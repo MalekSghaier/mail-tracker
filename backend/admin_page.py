@@ -570,7 +570,6 @@ def admin_page():
 </div>
 
 <script>
-let token = localStorage.getItem('admin_token') || null;
 
 function showDashboard() {
   document.getElementById('login-view').style.display = 'none';
@@ -614,6 +613,7 @@ async function doLogin() {
   try {
     const resp = await fetch('/api/admin/login', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
@@ -623,9 +623,7 @@ async function doLogin() {
       return;
     }
     const data = await resp.json();
-    token = data.access_token;
-    localStorage.setItem('admin_token', token);
-    document.getElementById('admin-name').textContent = username;
+    document.getElementById('admin-name').textContent = data.username;
     showDashboard();
   } catch (e) {
     errEl.textContent = 'Serveur injoignable.';
@@ -639,18 +637,15 @@ async function logout() {
   try {
     await fetch('/api/auth/logout', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token }
+      credentials: 'same-origin'
     });
   } catch (e) {
-  
   }
-  token = null;
-  localStorage.removeItem('admin_token');
   showLogin();
 }
 
 async function authFetch(url, options = {}) {
-  options.headers = Object.assign({}, options.headers, { 'Authorization': 'Bearer ' + token });
+  options.credentials = 'same-origin';
   const resp = await fetch(url, options);
   if (resp.status === 401 || resp.status === 403) {
     logout();
@@ -983,10 +978,19 @@ async function deleteExcludedPattern(id) {
   } catch (e) {}
 }
 
-if (token) {
-  showDashboard();
-} else {
-  showLogin();
+checkSession();
+
+async function checkSession() {
+  try {
+    const resp = await fetch('/api/admin/stats', { credentials: 'same-origin' });
+    if (resp.ok) {
+      showDashboard();
+    } else {
+      showLogin();
+    }
+  } catch (e) {
+    showLogin();
+  }
 }
 </script>
 </body>

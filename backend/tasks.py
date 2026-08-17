@@ -4,17 +4,27 @@ des tâches périodiques de maintenance.
 """
 import os
 import sys
+import logging
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from celery import Celery
 from dotenv import load_dotenv
+from logging_config import setup_logging
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+setup_logging()  
+logger = logging.getLogger(__name__)
 load_dotenv()
 
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "mailtracker")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", 5432)
+DB_NAME = os.getenv("DB_NAME")
+
+if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
+    raise RuntimeError(
+        "Variables d'environnement DB manquantes (DB_USER, DB_PASSWORD, DB_HOST, DB_NAME requis)."
+    )
 
 BROKER_URL = f"sqla+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 RESULT_BACKEND_URL = f"db+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -61,7 +71,7 @@ def compute_summary_task(self, tracking_id: str, body: str):
     try:
         ai_summary = generer_resume(body)
     except Exception as exc:
-        print(f"[compute_summary_task] tentative échouée pour {tracking_id}: {exc}")
+        logger.error("Tentative échouée pour %s", tracking_id, exc_info=True)
         raise self.retry(exc=exc)
 
     with get_db() as db:
@@ -90,7 +100,7 @@ def compute_imap_summary_task(self, tracking_id: str, body: str, has_attachment:
         try:
             ai_summary = generer_resume(body).strip() + piece_jointe_note
         except Exception as exc:
-            print(f"[compute_imap_summary_task] tentative échouée pour {tracking_id}: {exc}")
+            logger.error("Tentative échouée pour %s", tracking_id, exc_info=True)
             raise self.retry(exc=exc)
 
     with get_db() as db:

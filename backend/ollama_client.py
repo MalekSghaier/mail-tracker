@@ -3,12 +3,15 @@ Appelle Ollama (local) pour générer un résumé court du corps du mail.
 Nécessite qu'Ollama tourne déjà (ollama serve) avec le modèle téléchargé.
 """
 import re
+import logging
 import requests
 
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger(__name__)
+
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
@@ -77,15 +80,16 @@ def generer_resume(body_text: str) -> str:
         )
         resp.raise_for_status()
         resume = resp.json().get("response", "").strip()
-        print(f"[ollama_client] Résumé généré pour body de {len(body_text)} caractères: {resume!r}")
+        logger.debug("Résumé généré pour body de %d caractères: %r", len(body_text), resume)
+
 
         # Si le résumé est vide, trop court ou incohérent, on utilise le fallback
         if not resume or len(resume.split()) < 3:
-            print(f"[ollama_client] Résumé trop court, fallback utilisé")
+            logger.warning("Résumé trop court, fallback utilisé")
             return fallback
 
         if not _resume_coherent(body_clean, resume):
-            print(f"[ollama_client] Résumé incohérent, fallback utilisé")
+            logger.warning("Résumé incohérent, fallback utilisé")
             return fallback
 
         # Nettoie le résumé
@@ -96,11 +100,11 @@ def generer_resume(body_text: str) -> str:
         return resume
 
     except requests.exceptions.Timeout:
-        print("[ollama_client] Timeout Ollama")
+        logger.error("Timeout Ollama")
         return fallback
     except requests.exceptions.ConnectionError:
-        print("[ollama_client] Connexion impossible à Ollama")
+        logger.error("Connexion impossible à Ollama")
         return fallback
     except Exception as e:
-        print(f"[ollama_client] Erreur inattendue : {e}")
+        logger.error("Erreur inattendue", exc_info=True)
         return fallback

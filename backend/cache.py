@@ -58,3 +58,17 @@ def set_multi(items: dict, ttl: int = ALERTS_CACHE_TTL):
         pipe.execute()
     except redis.RedisError as exc:
         logger.warning(f"[cache] Redis indisponible (set_multi): {exc}")
+
+
+def check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
+    """Retourne True si l'appel est autorisé, False s'il dépasse la limite.
+    Fenêtre fixe basée sur INCR + EXPIRE — atomique par requête, partagé
+    entre tous les workers uvicorn puisque le compteur vit dans Redis."""
+    try:
+        count = r.incr(key)
+        if count == 1:
+            r.expire(key, window_seconds)
+        return count <= max_calls
+    except redis.RedisError as exc:
+        logger.warning(f"[cache] Redis indisponible (check_rate_limit, key={key}): {exc}")
+        return True
