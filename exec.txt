@@ -1,3 +1,4 @@
+redis-server
 uvicorn app:app --reload
 
 celery -A tasks worker --loglevel=info --pool=solo -Q maintenance -n maintenance@%h
