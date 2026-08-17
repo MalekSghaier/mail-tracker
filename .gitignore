@@ -23,12 +23,17 @@ venv/
 
 
 ### Runtime artifacts (Redis / Celery / logs)
-dump.rdb
-celerybeat-schedule
-celerybeat-schedule.bak
-celerybeat-schedule.dat
-celerybeat-schedule.dir
-*.log
+-dump.rdb
++*.rdb
+ celerybeat-schedule
+ celerybeat-schedule.bak
+ celerybeat-schedule.dat
+ celerybeat-schedule.dir
+ *.log
++
++### Secrets — ne jamais committer
++login.json
++**/login.json
 
 
 # plusieurs Mo, régénérés à chaque build.
