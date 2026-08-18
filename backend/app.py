@@ -23,9 +23,9 @@ from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_mult
 load_dotenv()
 
 MILTER_SHARED_SECRET = os.getenv("MILTER_SHARED_SECRET")
-THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2))
-IMAP_ALERT_THRESHOLD_MINUTES = int(os.getenv("IMAP_ALERT_THRESHOLD_MINUTES", 2))  # Normalement devrais etre 48h mais cas de test
-RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1))
+THRESHOLD_MINUTES = int(os.getenv("ALERT_THRESHOLD_MINUTES", 2880))
+IMAP_ALERT_THRESHOLD_MINUTES = int(os.getenv("IMAP_ALERT_THRESHOLD_MINUTES", 2880)) 
+RECHECK_MINUTES = int(os.getenv("REMINDER_RECHECK_MINUTES", 1440))
 PIXEL_ANTISCAN_DELAY_SECONDS = 5
 MILTER_RATE_LIMIT_MAX = int(os.getenv("MILTER_RATE_LIMIT_MAX", 60))
 MILTER_RATE_LIMIT_WINDOW = int(os.getenv("MILTER_RATE_LIMIT_WINDOW_SECONDS", 60))
