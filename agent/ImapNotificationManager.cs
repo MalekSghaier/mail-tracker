@@ -160,8 +160,8 @@ namespace MailDetectorAgent
                 {
                     CloseSingle();
                     
-                    ShowOrUpdateBadge(VisibleAlerts().Count);
-                    _centerForm?.RefreshList(VisibleAlerts());  
+                    ShowOrUpdateBadge(_pending.Count);
+                    _centerForm?.RefreshList(_pending.Values.ToList());  
                     return;
                 }
 
@@ -182,8 +182,8 @@ namespace MailDetectorAgent
             }
 
             CloseSingle();
-            ShowOrUpdateBadge(VisibleAlerts().Count);
-            _centerForm?.RefreshList(VisibleAlerts());
+            ShowOrUpdateBadge(_pending.Count);
+            _centerForm?.RefreshList(_pending.Values.ToList());
         }
 
         private static void ShowOrUpdateBadge(int count)
@@ -210,7 +210,7 @@ namespace MailDetectorAgent
             if (_centerForm == null || _centerForm.IsDisposed)
             {
                 _centerForm = new ImapNotificationCenterForm(
-                    VisibleAlerts(), 
+                    _pending.Values.ToList(), 
                     Dismiss,
                     MinimizeSingle,
                     GetReminderStatus,
