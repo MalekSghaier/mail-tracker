@@ -34,3 +34,10 @@ login.json
 # plusieurs Mo, régénérés à chaque build.
 agent/bin/
 agent/obj/
+dist/
+publish/
+
+*.exe
+*.pdb
+*.zip
+*.backup

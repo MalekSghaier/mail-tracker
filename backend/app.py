@@ -556,6 +556,10 @@ def user_login(payload: UserLogin):
             raise HTTPException(status_code=401, detail="Identifiants invalides")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Compte désactivé")
+
+        if user.monitoring_started_at is None:
+            user.monitoring_started_at = datetime.now()
+
         user_id = user.id
         account_role = user.account_role
 
@@ -697,7 +701,19 @@ def _own_imap_mail_query(db, user, tracking_id: str | None = None):
         .join(AppUser, ImapAccount.app_user_id == AppUser.id)
     )
     query = _apply_imap_role_filter(query, user)
-    query = _apply_excluded_patterns_filter(query, db) 
+    query = _apply_excluded_patterns_filter(query, db)
+
+    # Date de coupure = date de première connexion du chef de département
+    # (ou superadmin) actuellement CONNECTÉ, pas celle de l'employé.
+    current_username = user.get("sub")
+    current_admin_row = (
+        db.query(AppUser.monitoring_started_at)
+        .filter(AppUser.username == current_username)
+        .first()
+    )
+    if current_admin_row and current_admin_row.monitoring_started_at is not None:
+        query = query.filter(ReceivedMailLog.received_at >= current_admin_row.monitoring_started_at)
+
     if tracking_id is not None:
         query = query.filter(ReceivedMailLog.tracking_id == parse_tracking_id(tracking_id))
     return query

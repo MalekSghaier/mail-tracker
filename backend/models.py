@@ -29,6 +29,7 @@ class AppUser(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     created_by_admin_id = Column(Integer, ForeignKey("admins.id"), nullable=True)
+    monitoring_started_at = Column(DateTime, nullable=True)  
 
 
 class EmailLog(Base):
