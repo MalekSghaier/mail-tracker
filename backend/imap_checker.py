@@ -25,6 +25,8 @@ from dotenv import load_dotenv
 from db import get_db
 from models import ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import decrypt_secret
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 logger = logging.getLogger(__name__)
@@ -177,9 +179,11 @@ def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
                 date_str = msg.get("Date")
                 if date_str:
                     try:
-                        received_at = email.utils.parsedate_to_datetime(date_str)
-                        if received_at.tzinfo is not None:
-                            received_at = received_at.replace(tzinfo=None)
+                        parsed = email.utils.parsedate_to_datetime(date_str)
+                        if parsed.tzinfo is not None:
+                            received_at = parsed.astimezone(ZoneInfo("Africa/Tunis")).replace(tzinfo=None)
+                        else:
+                            received_at = parsed
                     except Exception:
                         received_at = None
                 body_text_raw = _extract_body_text(msg)

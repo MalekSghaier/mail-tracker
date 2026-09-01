@@ -13,7 +13,7 @@ from db import get_db
 from auth import hash_password, verify_password, create_access_token, get_current_admin, get_current_user, revoke_token ,set_session_cookie, clear_session_cookie
 from tasks import compute_summary_task
 from contextlib import asynccontextmanager
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import encrypt_secret
 from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL , check_rate_limit
@@ -895,7 +895,20 @@ def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: in
         return cached
 
     with get_db() as db:
-        base_query = _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False))
+        cutoff = datetime.now() - timedelta(minutes=IMAP_ALERT_THRESHOLD_MINUTES)
+        base_query = _own_imap_mail_query(db, user).filter(
+            ReceivedMailLog.is_seen.is_(False),
+            or_(
+                ReceivedMailLog.reminder_done.isnot(None),         
+                ReceivedMailLog.supervisor_acked.is_(True),          
+                and_(                                               
+                    ReceivedMailLog.reminder_done.is_(None),
+                    ReceivedMailLog.supervisor_acked.is_(False),
+                    ReceivedMailLog.received_at.isnot(None),
+                    ReceivedMailLog.received_at < cutoff,
+                ),
+            ),
+        )
         total = base_query.count()
 
         priority = _sql_sort_priority(ReceivedMailLog.reminder_done, ReceivedMailLog.supervisor_acked)
