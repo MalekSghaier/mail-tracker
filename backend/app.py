@@ -17,6 +17,7 @@ from sqlalchemy import or_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import encrypt_secret
 from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL , check_rate_limit
+from sqlalchemy import case
 
 
 
@@ -150,12 +151,31 @@ def _compute_sort_key(reminder_done, acked, date_value, opened_at=None):
         priority = 6
     return (priority, -(date_value.timestamp() if date_value else 0))
 
-
+def _sql_sort_priority(reminder_done_col, acked_col, opened_at_col=None):
+    """Équivalent SQL de _compute_sort_key, pour que Postgres trie et pagine
+    lui-même au lieu de charger toute la table en Python."""
+    conditions = [
+        (reminder_done_col.is_(False), 1),
+    ]
+    if opened_at_col is not None:
+        conditions += [
+            ((reminder_done_col.is_(None)) & (acked_col.is_(False)), 2),
+            ((reminder_done_col.is_(None)) & (acked_col.is_(True)), 3),
+            ((opened_at_col.isnot(None)) & (reminder_done_col.is_(None)), 4),
+            (reminder_done_col.is_(True), 5),
+        ]
+    else:
+        conditions += [
+            ((reminder_done_col.is_(None)) & (acked_col.is_(False)), 2),
+            ((reminder_done_col.is_(None)) & (acked_col.is_(True)), 3),
+            (reminder_done_col.is_(True), 5),
+        ]
+    return case(*conditions, else_=6)
 
 @app.get("/api/alerts")
-def get_alerts(user=Depends(get_current_user)):
+def get_alerts(user=Depends(get_current_user), limit: int = 100, offset: int = 0):
 
-    cache_key = f"alerts:{user.get('sub')}:{user.get('account_role','employee')}:{user.get('department','')}"
+    cache_key = f"alerts:{user.get('sub')}:{user.get('account_role','employee')}:{user.get('department','')}:{limit}:{offset}"
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
@@ -170,6 +190,16 @@ def get_alerts(user=Depends(get_current_user)):
         pending_q = pending_q.filter(EmailLog.sent_at < cutoff)
         pending_q = _apply_role_filter(pending_q, user, db)
 
+        seen_q = db.query(EmailLog).filter(
+            EmailLog.alert_acked.is_(True),
+            EmailLog.reminder_done.is_(None),
+            EmailLog.opened_at.is_(None),
+        )
+        seen_q = _apply_role_filter(seen_q, user, db)
+
+        pending_count = pending_q.count()
+        seen_count = seen_q.count()
+
         results = [
             {
                 "tracking_id": str(r.tracking_id), "sender": r.sender_email,
@@ -178,26 +208,24 @@ def get_alerts(user=Depends(get_current_user)):
                 "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
                 "category": "pending",
             }
-            for r in pending_q.all()
+            for r in pending_q.order_by(EmailLog.sent_at.desc()).limit(limit).offset(offset).all()
         ]
 
-        seen_q = db.query(EmailLog).filter(
-            EmailLog.alert_acked.is_(True),
-            EmailLog.reminder_done.is_(None),
-            EmailLog.opened_at.is_(None),
-        )
-        seen_q = _apply_role_filter(seen_q, user, db)
+        remaining = max(0, limit - len(results))
+        if remaining > 0:
+            for r in seen_q.order_by(EmailLog.sent_at.desc()).limit(remaining).all():
+                results.append({
+                    "tracking_id": str(r.tracking_id), "sender": r.sender_email,
+                    "recipient": r.recipient_email, "cc": r.cc_email or "",
+                    "subject": r.subject or "", "summary": r.ai_summary or "",
+                    "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
+                    "category": "seen_no_answer",
+                })
 
-        for r in seen_q.all():
-            results.append({
-                "tracking_id": str(r.tracking_id), "sender": r.sender_email,
-                "recipient": r.recipient_email, "cc": r.cc_email or "",
-                "subject": r.subject or "", "summary": r.ai_summary or "",
-                "sent_at": str(r.sent_at), "reminder_done": r.reminder_done,
-                "category": "seen_no_answer",
-            })
-    set_cached(cache_key, results)
-    return results
+    payload = {"total": pending_count + seen_count, "items": results}
+    set_cached(cache_key, payload)
+    return payload
+
 
 @app.get("/api/auth/verify")
 def verify_token(user=Depends(get_current_user)):
@@ -318,17 +346,19 @@ def get_history(user=Depends(get_current_user), limit: int = 50, offset: int = 0
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
-    with get_db() as db:
-        query = db.query(EmailLog)
-        query = _apply_role_filter(query, user, db)
-        rows = query.all()
 
-        rows = sorted(
-            rows,
-            key=lambda r: _compute_sort_key(r.reminder_done, r.alert_acked, r.sent_at, r.opened_at)
+    with get_db() as db:
+        base_query = _apply_role_filter(db.query(EmailLog), user, db)
+        total = base_query.count()
+
+        priority = _sql_sort_priority(EmailLog.reminder_done, EmailLog.alert_acked, EmailLog.opened_at)
+        rows = (
+            base_query
+            .order_by(priority.asc(), EmailLog.sent_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
         )
-        total = len(rows)
-        rows = rows[offset:offset + limit]
 
         result = [
             {
@@ -426,15 +456,20 @@ def list_users(admin=Depends(get_current_admin), limit: int = 50, offset: int = 
             .limit(limit)
             .all()
         )
-
-        result = []
-        for u in users:
-            imap_account = db.query(ImapAccount).filter(ImapAccount.app_user_id == u.id).first()
-            result.append({
+        user_ids = [u.id for u in users]
+        monitored_ids = {
+            row.app_user_id
+            for row in db.query(ImapAccount.app_user_id).filter(ImapAccount.app_user_id.in_(user_ids)).all()
+        }
+        
+        result = [
+            {
                 "id": u.id, "username": u.username, "email": u.email, "is_active": u.is_active,
                 "created_at": str(u.created_at), "department": u.department, "account_role": u.account_role,
-                "imap_monitored": imap_account is not None,
-            })
+                "imap_monitored": u.id in monitored_ids,
+            }
+            for u in users
+        ]
     return {"total": total, "limit": limit, "offset": offset, "items": result}
 
 
@@ -591,13 +626,13 @@ def get_mail_json(tracking_id: str, user=Depends(get_current_user)):
         if not mail:
             raise HTTPException(status_code=404, detail="Mail introuvable")
         
-        history_query = db.query(EmailLog)
-        history_query = _apply_role_filter(history_query, user, db)
-        history_rows = history_query.all()
-
-        history_rows = sorted(
-            history_rows,
-            key=lambda r: _compute_sort_key(r.reminder_done, r.alert_acked, r.sent_at, r.opened_at)
+        history_query = _apply_role_filter(db.query(EmailLog), user, db)
+        priority = _sql_sort_priority(EmailLog.reminder_done, EmailLog.alert_acked, EmailLog.opened_at)
+        history_rows = (
+            history_query
+            .order_by(priority.asc(), EmailLog.sent_at.desc())
+            .limit(100)
+            .all()
         )
 
         mail_data = {
@@ -744,10 +779,10 @@ def _require_supervisor(user: dict):
 
 
 @app.get("/api/imap-alerts")
-def get_own_imap_alerts(user=Depends(get_current_user)):
+def get_own_imap_alerts(user=Depends(get_current_user), limit: int = 200):
     _require_supervisor(user)
 
-    cache_key = f"imap-alerts:{user.get('sub')}"
+    cache_key = f"imap-alerts:{user.get('sub')}:{limit}"
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
@@ -764,17 +799,19 @@ def get_own_imap_alerts(user=Depends(get_current_user)):
         )
         results = [
             _serialize_imap_alert(mail, account, app_user, "pending")
-            for mail, account, app_user in pending_q.order_by(ReceivedMailLog.received_at.asc()).all()
+            for mail, account, app_user in pending_q.order_by(ReceivedMailLog.received_at.asc()).limit(limit).all()
         ]
 
-        seen_q = _own_imap_mail_query(db, user).filter(
-            ReceivedMailLog.supervisor_acked.is_(True),
-            ReceivedMailLog.reminder_done.is_(None),
-            ReceivedMailLog.is_seen.is_(False),
-        )
-        for mail, account, app_user in seen_q.order_by(ReceivedMailLog.received_at.asc()).all():
-            results.append(_serialize_imap_alert(mail, account, app_user, "seen_no_answer"))
-    
+        remaining = max(0, limit - len(results))
+        if remaining > 0:
+            seen_q = _own_imap_mail_query(db, user).filter(
+                ReceivedMailLog.supervisor_acked.is_(True),
+                ReceivedMailLog.reminder_done.is_(None),
+                ReceivedMailLog.is_seen.is_(False),
+            )
+            for mail, account, app_user in seen_q.order_by(ReceivedMailLog.received_at.asc()).limit(remaining).all():
+                results.append(_serialize_imap_alert(mail, account, app_user, "seen_no_answer"))
+
     set_cached(cache_key, results)
     return results
 
@@ -858,10 +895,17 @@ def get_imap_history(user=Depends(get_current_user), limit: int = 50, offset: in
         return cached
 
     with get_db() as db:
-        query = _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False))
-        rows = sorted(query.all(), key=_imap_history_sort_key)
-        total = len(rows)
-        rows = rows[offset:offset + limit]
+        base_query = _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False))
+        total = base_query.count()
+
+        priority = _sql_sort_priority(ReceivedMailLog.reminder_done, ReceivedMailLog.supervisor_acked)
+        rows = (
+            base_query
+            .order_by(priority.asc(), ReceivedMailLog.received_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
         result = [
             {
@@ -893,9 +937,13 @@ def get_imap_mail_json(tracking_id: str, user=Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="Mail introuvable")
         mail, account, app_user = row
 
-        history_rows = sorted(
-            _own_imap_mail_query(db, user).filter(ReceivedMailLog.is_seen.is_(False)).all(),
-            key=_imap_history_sort_key,
+        priority = _sql_sort_priority(ReceivedMailLog.reminder_done, ReceivedMailLog.supervisor_acked)
+        history_rows = (
+            _own_imap_mail_query(db, user)
+            .filter(ReceivedMailLog.is_seen.is_(False))
+            .order_by(priority.asc(), ReceivedMailLog.received_at.desc())
+            .limit(100)
+            .all()
         )
 
         mail_data = {

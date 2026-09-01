@@ -48,6 +48,9 @@ class EmailLog(Base):
     reminder_done = Column(Boolean, nullable=True)
     reminder_answered_at = Column(DateTime(timezone=False), nullable=True)
     reminder_recheck_at = Column(DateTime(timezone=False), nullable=True)
+    __table_args__ = (
+        Index("idx_email_log_pending", "opened_at", "alert_acked", "reminder_done", "sent_at"),
+    )
 
 class ReceivedMailLog(Base):
     __tablename__ = "received_mail_log"
@@ -72,6 +75,7 @@ class ReceivedMailLog(Base):
     summary_requested_at = Column(DateTime(timezone=False), nullable=True)
     __table_args__ = (
         Index("idx_received_mail_account_uid_uidval", "imap_account_id", "message_uid", "uidvalidity"),
+        Index("idx_received_mail_pending", "is_seen", "supervisor_acked", "reminder_done", "received_at"),
     )
 
 

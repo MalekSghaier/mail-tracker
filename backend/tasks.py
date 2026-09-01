@@ -26,8 +26,13 @@ if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
         "Variables d'environnement DB manquantes (DB_USER, DB_PASSWORD, DB_HOST, DB_NAME requis)."
     )
 
-BROKER_URL = f"sqla+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-RESULT_BACKEND_URL = f"db+postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+BROKER_URL = os.getenv("CELERY_BROKER_URL")
+RESULT_BACKEND_URL = os.getenv("CELERY_RESULT_BACKEND_URL")
+
+if not BROKER_URL or not RESULT_BACKEND_URL:
+    raise RuntimeError(
+        "CELERY_BROKER_URL et CELERY_RESULT_BACKEND_URL doivent être définis dans .env"
+    )
 
 celery_app = Celery("mail_detector", broker=BROKER_URL, backend=RESULT_BACKEND_URL)
 celery_app.conf.result_expires = 3600
