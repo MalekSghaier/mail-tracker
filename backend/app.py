@@ -519,6 +519,22 @@ def deactivate_user(user_id: int, admin=Depends(get_current_admin)):
                 imap_account.is_active = False
     return {"ok": True}
 
+@app.delete("/api/admin/users/{user_id}/permanent")
+def delete_user_permanently(user_id: int, admin=Depends(get_current_admin)):
+    with get_db() as db:
+        user = db.query(AppUser).filter(AppUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+        db.delete(user)
+
+    invalidate_prefix("imap-alerts:")
+    invalidate_prefix("imap-history:")
+    invalidate_prefix("imap-mail:")
+    invalidate_prefix("alerts:")
+    invalidate_prefix("history:")
+    invalidate_prefix("mail:")
+    return {"ok": True}
+
 
 @app.post("/api/admin/users/{user_id}/activate")
 def activate_user(user_id: int, admin=Depends(get_current_admin)):

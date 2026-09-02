@@ -277,8 +277,8 @@ def admin_page():
 
 
 /* ---- table ---- */
-  .table-scroll { width: 100%; }
-  table { width: 100%; table-layout: auto; border-collapse: collapse; font-size: 13px; }
+  .table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; min-width: 760px; table-layout: auto; border-collapse: collapse; font-size: 13px; }
   thead th {
     text-align: left; padding: 12px 14px;
     font-size: 10px; font-weight: 700; letter-spacing: .1em;
@@ -370,6 +370,15 @@ def admin_page():
     border: none;
     box-shadow: 0 6px 18px rgba(212,96,96,.25);
   }
+  @media (max-width: 640px) {
+  .container { padding: 32px 14px 60px; }
+  .card { padding: 18px; }
+  thead th, td { padding: 10px 12px; font-size: 12px; }
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
+  .form-grid { grid-template-columns: 1fr; }
+  .header { padding: 14px 18px; }
+  .header-sub { display: none; }
+}
 </style>
 </head>
 <body>
@@ -727,6 +736,7 @@ async function loadUsers(offset = 0) {
           ${u.is_active
               ? `<button class="btn btn-danger" onclick="deactivateUser(${u.id})">Désactiver</button>`
               : `<button class="btn btn-success" onclick="activateUser(${u.id})">Réactiver</button>`}
+          <button class="btn btn-danger" onclick="deleteUserPermanently(${u.id}, '${escapeHtml(u.username)}')">Supprimer</button>
         </td>
       </tr>
     `).join('');
@@ -857,6 +867,19 @@ async function deactivateUser(id) {
 async function activateUser(id) {
   try {
     await authFetch(`/api/admin/users/${id}/activate`, { method: 'POST' });
+    loadUsers();
+    loadStats();
+  } catch (e) {}
+}
+
+async function deleteUserPermanently(id, username) {
+  const ok = await showConfirm(
+    `Cette action est irréversible : le compte "${username}" et toutes ses données liées (boîte mail surveillée, historique de mails reçus) seront définitivement supprimés.`,
+    { title: "Supprimer définitivement cet utilisateur ?", confirmLabel: "Supprimer définitivement" }
+  );
+  if (!ok) return;
+  try {
+    await authFetch(`/api/admin/users/${id}/permanent`, { method: 'DELETE' });
     loadUsers();
     loadStats();
   } catch (e) {}
