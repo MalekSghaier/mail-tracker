@@ -181,7 +181,7 @@ def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
                     try:
                         parsed = email.utils.parsedate_to_datetime(date_str)
                         if parsed.tzinfo is not None:
-                            received_at = parsed.astimezone(ZoneInfo("Africa/Tunis")).replace(tzinfo=None)
+                            received_at = parsed.astimezone(timezone.utc).replace(tzinfo=None)
                         else:
                             received_at = parsed
                     except Exception:
