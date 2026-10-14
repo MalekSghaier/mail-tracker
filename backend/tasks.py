@@ -58,8 +58,8 @@ celery_app.conf.beat_schedule = {
 celery_app.conf.task_routes = {
     "tasks.sync_account_task": {"queue": "imap_sync"},
     "tasks.sync_all_imap_accounts": {"queue": "imap_sync"},
-    "tasks.reset_expired_reminders": {"queue": "maintenance"},
-    "tasks.reset_expired_imap_reminders": {"queue": "maintenance"},
+    "tasks.reset_expired_reminders": {"queue": "periodic"},
+    "tasks.reset_expired_imap_reminders": {"queue": "periodic"},
     "tasks.compute_summary_task": {"queue": "maintenance"},      
     "tasks.compute_imap_summary_task": {"queue": "maintenance"},  
     "tasks.cleanup_stale_sessions": {"queue": "maintenance"}, 

@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from db import get_db
 from models import ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import decrypt_secret
+from oauth_utils import get_access_token
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -44,9 +45,40 @@ if not IMAP_HOST:
     )
 
 LOOKBACK_DAYS = int(os.getenv("IMAP_LOOKBACK_DAYS", 30))
+OAUTH_DOMAINS = [
+    d.strip().lower()
+    for d in os.getenv("OAUTH_DOMAINS", "arstunisie.com").split(",")
+    if d.strip()
+]
 RETRY_COOLDOWN_MINUTES = int(os.getenv("IMAP_RETRY_COOLDOWN_MINUTES", 10))
+TOP_LIMIT = 50
+DEFERRED_COUNTDOWN_SECONDS = 600
+
+def _uses_oauth(email_address: str) -> bool:
+    return email_address.rsplit("@", 1)[-1].lower() in OAUTH_DOMAINS
 
 
+def _connect_imap(account: ImapAccount) -> imaplib.IMAP4_SSL:
+    """Ouvre la connexion IMAP : OAuth 2.0 (XOAUTH2) pour les boîtes
+    Microsoft 365, mot de passe pour les autres comptes."""
+    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    try:
+        if _uses_oauth(account.email):
+            token = get_access_token()
+            auth_string = f"user={account.email}\x01auth=Bearer {token}\x01\x01"
+            imap.authenticate("XOAUTH2", lambda _: auth_string.encode("utf-8"))
+        else:
+            password = decrypt_secret(account.encrypted_password)
+            imap.login(account.email, password)
+    except Exception:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+        raise
+    return imap
+
+    
 def _decode_mime_str(value: str | None) -> str:
     if not value:
         return ""
@@ -90,10 +122,8 @@ def _read_uidvalidity(imap: imaplib.IMAP4_SSL) -> int | None:
 def _get_current_uidvalidity(account: ImapAccount) -> int | None:
     """Ouvre une connexion IMAP dédiée juste pour lire l'UIDVALIDITY
     courante (utilisé par le script de backfill)."""
-    password = decrypt_secret(account.encrypted_password)
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    imap = _connect_imap(account)
     try:
-        imap.login(account.email, password)
         imap.select("INBOX", readonly=True)
         return _read_uidvalidity(imap)
     finally:
@@ -110,11 +140,9 @@ def _fetch_inbox_state(account: ImapAccount, excluded_patterns: list[str],
     known_uids/uids_missing_body à partir de cette valeur (et non plus
     passés en paramètre) pour garantir qu'on ne compare jamais des UID
     appartenant à deux epochs UIDVALIDITY différentes."""
-    password = decrypt_secret(account.encrypted_password)
 
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    imap = _connect_imap(account)
     try:
-        imap.login(account.email, password)
         imap.select("INBOX", readonly=True)
         current_uidvalidity = _read_uidvalidity(imap)
 
@@ -282,7 +310,7 @@ def sync_account(account_id: int) -> None:
                     if not existing.subject:
                         existing.subject = msg.get("subject")
                     existing.summary_requested_at = datetime.now()
-                    new_summaries.append((str(existing.tracking_id), msg["body"], msg.get("has_attachment", False)))
+                    new_summaries.append((str(existing.tracking_id), msg["body"], msg.get("has_attachment", False), existing.received_at))
             else:
                 entry = ReceivedMailLog(
                     imap_account_id=account.id,
@@ -299,7 +327,7 @@ def sync_account(account_id: int) -> None:
                 db.flush()
                 if msg.get("body") or msg.get("has_attachment"):
                     entry.summary_requested_at = datetime.now()
-                    new_summaries.append((str(entry.tracking_id), msg["body"], msg.get("has_attachment", False)))
+                    new_summaries.append((str(entry.tracking_id), msg["body"], msg.get("has_attachment", False), entry.received_at))
 
         
         stuck = (
@@ -317,14 +345,27 @@ def sync_account(account_id: int) -> None:
             .all()
         )
         for entry in stuck:
-            already_queued = any(tid == str(entry.tracking_id) for tid, _, _ in new_summaries)
+            already_queued = any(tid == str(entry.tracking_id) for tid, _, _, _ in new_summaries)
             if not already_queued:
                 entry.summary_requested_at = datetime.now()
-                retry_summaries.append((str(entry.tracking_id), entry.body, False))
+                retry_summaries.append((str(entry.tracking_id), entry.body, False, entry.received_at))
 
     from tasks import compute_imap_summary_task
-    for tracking_id, body, has_attachment in new_summaries + retry_summaries:
-        compute_imap_summary_task.delay(tracking_id, body, has_attachment)
+    all_summaries = new_summaries + retry_summaries
+    all_summaries.sort(key=lambda x: x[3] or datetime.min, reverse=True)
+    priority_batch = all_summaries[:TOP_LIMIT]
+    deferred_batch = all_summaries[TOP_LIMIT:]
+    for tracking_id, body, has_attachment, _received_at in priority_batch:
+        compute_imap_summary_task.apply_async(
+            args=[tracking_id, body, has_attachment],
+            queue="imap_sync",
+        )
+    for tracking_id, body, has_attachment, _received_at in deferred_batch:
+        compute_imap_summary_task.apply_async(
+            args=[tracking_id, body, has_attachment],
+            queue="maintenance",
+            countdown=DEFERRED_COUNTDOWN_SECONDS,
+        )
 
 
 def _extract_body_text(msg) -> str:

@@ -1,9 +1,8 @@
 redis-server
 uvicorn app:app --reload
-
 celery -A tasks worker --loglevel=info --pool=solo -Q maintenance -n maintenance@%h
+celery -A tasks worker --loglevel=info --pool=solo -Q periodic -n periodic@%h
 celery -A tasks worker --loglevel=info --pool=solo -Q imap_sync -n imap_sync@%h
-
 celery -A tasks beat --loglevel=info
 
 taskkill /IM MailDetectorAgent.exe /F

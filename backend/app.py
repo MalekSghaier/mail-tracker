@@ -1,5 +1,6 @@
 import html as html_module
 import os
+import secrets
 import hmac
 import uuid as uuid_lib
 from datetime import datetime, timedelta
@@ -15,7 +16,6 @@ from tasks import compute_summary_task
 from contextlib import asynccontextmanager
 from sqlalchemy import or_, and_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
-from crypto_utils import encrypt_secret
 from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL , check_rate_limit
 from sqlalchemy import case
 
@@ -387,9 +387,8 @@ class UserLogin(BaseModel):
 
 class UserCreate(BaseModel):
     username: str
-    password: str
+    password: str | None = None
     email: str | None = None                         
-    imap_password: str | None = None                
     department: str | None = None
     account_role: str = "employee"
 
@@ -420,7 +419,7 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
         user = AppUser(
             username=payload.username,
             email=payload.email,
-            password_hash=hash_password(payload.password),
+            password_hash=hash_password(payload.password or secrets.token_urlsafe(16)),
             department=payload.department,
             account_role=payload.account_role,
             created_by_admin_id=admin["admin_id"],
@@ -430,15 +429,6 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
 
         # On ne crée un ImapAccount que si un email + mot de passe IMAP sont fournis.
         # Un chef de département purement "superviseur" n'en a pas besoin.
-        if payload.email and payload.imap_password:
-            imap_account = ImapAccount(
-                label=payload.username,
-                email=payload.email,
-                encrypted_password=encrypt_secret(payload.imap_password),
-                app_user_id=user.id,
-            )
-            db.add(imap_account)
-            db.flush()
 
         user_id = user.id
 

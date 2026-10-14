@@ -449,17 +449,10 @@ def admin_page():
         <div class="form-section-title">Accès</div>
         <div class="form-grid">
           <div class="form-field">
-            <label>Mot de passe (agent)</label>
+            <label>Mot de passe (agent) — optionnel</label>
             <div class="password-input-wrap">
               <input id="new-password" type="password">
               <button type="button" class="password-toggle" onclick="togglePassword('new-password', this)">👁</button>
-            </div>
-          </div>
-          <div class="form-field">
-            <label>Mot de passe de la boîte mail</label>
-            <div class="password-input-wrap">
-              <input id="new-imap-password" type="password">
-              <button type="button" class="password-toggle" onclick="togglePassword('new-imap-password', this)">👁</button>
             </div>
           </div>
           <div class="form-field">
@@ -804,7 +797,6 @@ async function addUser() {
   const username = document.getElementById('new-username').value.trim();
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
-  const imapPassword = document.getElementById('new-imap-password').value;
   const department = document.getElementById('new-department').value.trim();
   const account_role = document.getElementById('new-role').value;
   const okEl = document.getElementById('add-ok');
@@ -813,8 +805,8 @@ async function addUser() {
   okEl.style.display = 'none';
   errEl.style.display = 'none';
 
-  if (!username || !password || !email || !imapPassword) {
-    errEl.textContent = "Nom d'utilisateur, email, mot de passe agent et mot de passe boîte mail sont requis.";
+  if (!username || !email) {
+    errEl.textContent = "Nom d'utilisateur et email sont requis.";
     errEl.style.display = 'block';
     return;
   }
@@ -826,7 +818,6 @@ async function addUser() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         username, email, password,
-        imap_password: imapPassword,
         department: department || null, account_role
       })
     });
@@ -835,7 +826,6 @@ async function addUser() {
       document.getElementById('new-username').value = '';
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
-      document.getElementById('new-imap-password').value = '';
       document.getElementById('new-department').value = '';
       document.getElementById('new-role').value = 'employee';
       loadUsers();
