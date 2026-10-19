@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from db import get_db
 from models import ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from crypto_utils import decrypt_secret
-from oauth_utils import get_access_token
+from oauth_utils import get_access_token, _uses_oauth
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -45,17 +45,9 @@ if not IMAP_HOST:
     )
 
 LOOKBACK_DAYS = int(os.getenv("IMAP_LOOKBACK_DAYS", 30))
-OAUTH_DOMAINS = [
-    d.strip().lower()
-    for d in os.getenv("OAUTH_DOMAINS", "arstunisie.com").split(",")
-    if d.strip()
-]
 RETRY_COOLDOWN_MINUTES = int(os.getenv("IMAP_RETRY_COOLDOWN_MINUTES", 10))
 TOP_LIMIT = 50
 DEFERRED_COUNTDOWN_SECONDS = 600
-
-def _uses_oauth(email_address: str) -> bool:
-    return email_address.rsplit("@", 1)[-1].lower() in OAUTH_DOMAINS
 
 
 def _connect_imap(account: ImapAccount) -> imaplib.IMAP4_SSL:

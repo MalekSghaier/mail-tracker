@@ -9,6 +9,17 @@ CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
 SCOPE = ["https://outlook.office365.com/.default"]
 
+OAUTH_DOMAINS = [
+    d.strip().lower()
+    for d in os.getenv("OAUTH_DOMAINS", "arstunisie.com").split(",")
+    if d.strip()
+]
+
+
+def _uses_oauth(email_address: str) -> bool:
+    return email_address.rsplit("@", 1)[-1].lower() in OAUTH_DOMAINS
+
+
 _app = None
 
 

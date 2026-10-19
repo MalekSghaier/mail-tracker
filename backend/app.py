@@ -18,6 +18,8 @@ from sqlalchemy import or_, and_
 from models import EmailLog, Admin, AppUser, Session, ImapAccount, ReceivedMailLog, ImapExcludedPattern
 from cache import get_cached, set_cached, invalidate_prefix, get_multi, set_multi, HISTORY_CACHE_TTL , check_rate_limit
 from sqlalchemy import case
+from crypto_utils import encrypt_secret
+from oauth_utils import _uses_oauth
 
 
 
@@ -427,8 +429,19 @@ def create_user(payload: UserCreate, admin=Depends(get_current_admin)):
         db.add(user)
         db.flush()
 
-        # On ne crée un ImapAccount que si un email + mot de passe IMAP sont fournis.
-        # Un chef de département purement "superviseur" n'en a pas besoin.
+        # Surveillance IMAP automatique pour les comptes du domaine OAuth
+        # (OAUTH_DOMAINS, ex. arstunisie.com) : pas de mot de passe requis,
+        # l'authentification se fait via XOAUTH2 (Azure AD) au moment de la
+        # synchronisation. Un chef de département purement "superviseur"
+        # sans email n'a pas besoin de surveillance.
+        if payload.email and _uses_oauth(payload.email):
+            imap_account = ImapAccount(
+                label=payload.username,
+                email=payload.email,
+                encrypted_password=encrypt_secret(""),
+                app_user_id=user.id,
+            )
+            db.add(imap_account)
 
         user_id = user.id
 
